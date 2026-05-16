@@ -38,9 +38,9 @@ export default function SkillsPage() {
   const [saving, setSaving] = useState(false);
 
   const [selectedSkillId, setSelectedSkillId] = useState('');
-  const [proficiency, setProficiency] = useState(3);
+  const [proficiency, setProficiency] = useState(1);
   const [isTeaching, setIsTeaching] = useState(false);
-  const [isLearning, setIsLearning] = useState(true);
+  const [isLearning, setIsLearning] = useState(false);
 
   const [newSkillName, setNewSkillName] = useState('');
   const [newSkillCategory, setNewSkillCategory] = useState('programming');
@@ -111,6 +111,9 @@ export default function SkillsPage() {
         is_learning: isLearning,
       });
       await loadData();
+      setProficiency(1);
+      setIsTeaching(false);
+      setIsLearning(false);
       toast.success('Skill assigned successfully');
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to assign skill');

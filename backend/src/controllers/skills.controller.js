@@ -1,6 +1,12 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
 
+const normalizeProficiencyLevel = (level) => {
+  const numericLevel = Number(level);
+  if (!Number.isInteger(numericLevel)) return 1;
+  return Math.min(Math.max(numericLevel, 1), 5);
+};
+
 /**
  * List all skills, optional filter by category.
  */
@@ -119,9 +125,9 @@ const addUserSkill = async (req, res) => {
       .insert({
         user_id: userId,
         skill_id,
-        proficiency_level: proficiency_level || 3,
-        is_teaching: is_teaching || false,
-        is_learning: is_learning || false,
+        proficiency_level: normalizeProficiencyLevel(proficiency_level),
+        is_teaching: Boolean(is_teaching),
+        is_learning: Boolean(is_learning),
       })
       .select('*, skills(*)')
       .single();
@@ -173,7 +179,7 @@ const updateUserSkill = async (req, res) => {
     const { proficiency_level, is_teaching, is_learning } = req.body;
 
     const updates = {};
-    if (proficiency_level !== undefined) updates.proficiency_level = proficiency_level;
+    if (proficiency_level !== undefined) updates.proficiency_level = normalizeProficiencyLevel(proficiency_level);
     if (is_teaching !== undefined) updates.is_teaching = is_teaching;
     if (is_learning !== undefined) updates.is_learning = is_learning;
 

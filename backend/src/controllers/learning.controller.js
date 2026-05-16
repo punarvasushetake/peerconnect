@@ -1,11 +1,52 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
 
+const DEFAULT_COURSE_THUMBNAIL_URL = `data:image/svg+xml,${encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="0.52" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#f97316"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="70%" cy="20%" r="60%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <rect width="1200" height="675" fill="url(#glow)"/>
+  <g fill="none" stroke="#ffffff" stroke-opacity="0.32" stroke-width="16">
+    <path d="M346 238h346c44 0 80 36 80 80v196H426c-44 0-80-36-80-80V238Z"/>
+    <path d="M426 162h346c44 0 80 36 80 80v196"/>
+  </g>
+  <circle cx="384" cy="250" r="42" fill="#ffffff" fill-opacity="0.22"/>
+  <text x="94" y="535" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="76" font-weight="800">Peer Connect Course</text>
+</svg>
+`)}`;
+
+const normalizeThumbnailUrl = (thumbnailUrl) => {
+  if (typeof thumbnailUrl !== 'string') return DEFAULT_COURSE_THUMBNAIL_URL;
+  const trimmed = thumbnailUrl.trim();
+  return trimmed || DEFAULT_COURSE_THUMBNAIL_URL;
+};
+
+const sortCoursesForUser = (courses, userId) => {
+  return [...courses].sort((a, b) => {
+    const aIsOwn = a.created_by === userId;
+    const bIsOwn = b.created_by === userId;
+
+    if (aIsOwn !== bIsOwn) return aIsOwn ? 1 : -1;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+};
+
 /**
  * List courses with pagination and optional category filter.
  */
 const getCourses = async (req, res) => {
   try {
+    const userId = req.user.id;
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 20;
     const { category } = req.query;
@@ -14,7 +55,6 @@ const getCourses = async (req, res) => {
     let query = supabase
       .from('courses')
       .select('*, profiles!courses_created_by_fkey(id, full_name, avatar_url)', { count: 'exact' })
-      .range(offset, offset + limit - 1)
       .order('created_at', { ascending: false });
 
     if (category) {
@@ -25,9 +65,11 @@ const getCourses = async (req, res) => {
 
     if (error) throw new ApiError(400, error.message);
 
+    const sortedCourses = sortCoursesForUser(data || [], userId);
+
     res.json({
       success: true,
-      data,
+      data: sortedCourses.slice(offset, offset + limit),
       pagination: {
         page,
         limit,
@@ -63,7 +105,7 @@ const createCourse = async (req, res) => {
         category,
         skill_id,
         difficulty: difficulty || 'beginner',
-        thumbnail_url,
+        thumbnail_url: normalizeThumbnailUrl(thumbnail_url),
         created_by: userId,
       })
       .select()
@@ -171,7 +213,7 @@ const updateCourse = async (req, res) => {
     if (category !== undefined) updates.category = category;
     if (skill_id !== undefined) updates.skill_id = skill_id;
     if (difficulty !== undefined) updates.difficulty = difficulty;
-    if (thumbnail_url !== undefined) updates.thumbnail_url = thumbnail_url;
+    if (thumbnail_url !== undefined) updates.thumbnail_url = normalizeThumbnailUrl(thumbnail_url);
 
     const { data, error } = await supabase
       .from('courses')
