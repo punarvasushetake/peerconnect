@@ -374,7 +374,11 @@ export default function VideoSessionPage() {
           const withoutDuplicate = prev.filter((item) => item.id !== payload.session.id);
           return [payload.session, ...withoutDuplicate];
         });
-        toast.success(payload.message || 'Session request sent');
+        toast.success(
+          payload.email_sent
+            ? payload.message || 'Session request emailed to the peer'
+            : 'Session request sent. The peer can accept it from their notifications.'
+        );
       }
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to request session');
