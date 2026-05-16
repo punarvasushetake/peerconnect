@@ -9,6 +9,7 @@ import Input from '@/components/ui/Input';
 import Badge from '@/components/ui/Badge';
 import Skeleton from '@/components/ui/Skeleton';
 import EmptyState from '@/components/ui/EmptyState';
+import Modal from '@/components/ui/Modal';
 import RichTextEditor from '@/components/editor/RichTextEditor';
 import { timeAgo } from '@/lib/utils';
 import { unwrapData } from '@/lib/apiResponse';
@@ -81,6 +82,8 @@ export default function KnowledgePage() {
   const [saving, setSaving] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [query, setQuery] = useState('');
+  const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
+  const [viewingArticleId, setViewingArticleId] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('general');
@@ -147,9 +150,54 @@ export default function KnowledgePage() {
     try {
       await api.delete(`/resources/${article.id}`);
       setArticles((prev) => prev.filter((item) => item.id !== article.id));
+      if (selectedArticle?.id === article.id) setSelectedArticle(null);
       toast.success('Resource deleted');
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Unable to delete resource');
+    }
+  };
+
+  const syncViewedArticle = (viewedArticle: Article) => {
+    setArticles((prev) =>
+      prev.map((item) =>
+        item.id === viewedArticle.id
+          ? { ...item, ...viewedArticle, views_count: viewedArticle.views_count || 0 }
+          : item
+      )
+    );
+  };
+
+  const recordResourceView = async (article: Article) => {
+    const response = await api.get(`/resources/${article.id}`);
+    const viewedArticle = unwrapData<Article>(response);
+    if (viewedArticle) {
+      syncViewedArticle(viewedArticle);
+      return viewedArticle;
+    }
+    return article;
+  };
+
+  const handleViewResource = async (article: Article) => {
+    try {
+      setViewingArticleId(article.id);
+      const viewedArticle = await recordResourceView(article);
+      setSelectedArticle(viewedArticle);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'Failed to open resource');
+    } finally {
+      setViewingArticleId(null);
+    }
+  };
+
+  const handleOpenResourceLink = async (article: Article, href: string) => {
+    try {
+      setViewingArticleId(article.id);
+      await recordResourceView(article);
+      window.open(href, '_blank', 'noopener,noreferrer');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'Failed to open resource link');
+    } finally {
+      setViewingArticleId(null);
     }
   };
 
@@ -301,9 +349,15 @@ export default function KnowledgePage() {
                 <div key={article.id} className="rounded-lg border border-slate-200 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-semibold text-slate-900">{article.title}</h3>
+                      <button
+                        type="button"
+                        onClick={() => handleViewResource(article)}
+                        className="text-left font-semibold text-slate-900 hover:text-blue-600"
+                      >
+                        {article.title}
+                      </button>
                       <p className="text-xs text-slate-500 mt-1">
-                        {article.profiles?.full_name || 'Unknown author'} • {timeAgo(article.created_at)}
+                        {article.profiles?.full_name || 'Unknown author'} - {timeAgo(article.created_at)}
                       </p>
                     </div>
                     {user?.id === article.author_id && (
@@ -312,21 +366,27 @@ export default function KnowledgePage() {
                       </Button>
                     )}
                   </div>
-                  <p className="mt-2 text-sm text-slate-700 line-clamp-3">{htmlToText(article.content)}</p>
+                  <button
+                    type="button"
+                    onClick={() => handleViewResource(article)}
+                    className="mt-2 block w-full text-left text-sm text-slate-700 line-clamp-3 hover:text-slate-900"
+                  >
+                    {htmlToText(article.content)}
+                  </button>
                   {extractResourceLinks(article.content).length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {extractResourceLinks(article.content).map((link) => (
-                        <a
+                        <button
+                          type="button"
                           key={link.href}
-                          href={link.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                          onClick={() => handleOpenResourceLink(article, link.href)}
+                          disabled={viewingArticleId === article.id}
                           className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
                         >
                           <Paperclip className="h-3.5 w-3.5 shrink-0" />
                           <span className="truncate">{link.label}</span>
                           <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                        </a>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -345,6 +405,31 @@ export default function KnowledgePage() {
           )}
         </Card>
       </div>
+
+      <Modal
+        isOpen={Boolean(selectedArticle)}
+        onClose={() => setSelectedArticle(null)}
+        title={selectedArticle?.title || 'Resource'}
+        size="lg"
+      >
+        {selectedArticle && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {selectedArticle.category && <Badge>{selectedArticle.category}</Badge>}
+              {(selectedArticle.tags || []).slice(0, 6).map((tag) => (
+                <Badge key={tag} variant="primary">
+                  #{tag}
+                </Badge>
+              ))}
+              <Badge variant="default">Views: {selectedArticle.views_count || 0}</Badge>
+            </div>
+            <div
+              className="prose prose-sm max-h-[60vh] max-w-none overflow-auto text-slate-700"
+              dangerouslySetInnerHTML={{ __html: selectedArticle.content }}
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

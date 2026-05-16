@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Brain, Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
+import { getCurrentSession, supabase } from '@/lib/supabase';
 
 export default function CallbackPage() {
   const router = useRouter();
@@ -27,9 +27,7 @@ export default function CallbackPage() {
       }
 
       // 2) Read session immediately after exchange.
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const session = await getCurrentSession();
 
       if (cancelled) return;
 

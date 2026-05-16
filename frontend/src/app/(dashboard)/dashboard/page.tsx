@@ -23,6 +23,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { isGuestUser } from '@/lib/guestSession';
 import { timeAgo, getLevelTitle } from '@/lib/utils';
 import { unwrapData } from '@/lib/apiResponse';
+import { normalizePeerRecommendations } from '@/lib/recommendations';
 import api from '@/lib/api';
 import { DashboardStats, PeerRecommendation } from '@/types';
 
@@ -41,13 +42,23 @@ const ACTION_META: Record<string, { label: string; icon: React.ReactNode; color:
     icon: <BookOpen className="h-4 w-4" />,
     color: 'text-emerald-500 bg-emerald-50',
   },
-  article_published: {
+  course_created: {
+    label: 'Created a course',
+    icon: <BookOpen className="h-4 w-4" />,
+    color: 'text-emerald-500 bg-emerald-50',
+  },
+  course_enrolled: {
+    label: 'Enrolled in a course',
+    icon: <BookOpen className="h-4 w-4" />,
+    color: 'text-emerald-500 bg-emerald-50',
+  },
+  article_created: {
     label: 'Published an article',
     icon: <FileText className="h-4 w-4" />,
     color: 'text-violet-500 bg-violet-50',
   },
-  quiz_taken: {
-    label: 'Completed a quiz',
+  quiz_passed: {
+    label: 'Passed a quiz',
     icon: <HelpCircle className="h-4 w-4" />,
     color: 'text-amber-500 bg-amber-50',
   },
@@ -246,22 +257,28 @@ export default function DashboardPage() {
         setLoading(true);
         setError(null);
 
-        const [statsRes, recsRes] = await Promise.all([
+        const [statsResult, recsResult] = await Promise.allSettled([
           api.get('/analytics/dashboard'),
           api.get('/ai/recommendations'),
         ]);
 
-        const statsPayload = unwrapData<DashboardStats>(statsRes);
-        const recommendationPayload = unwrapData<
-          PeerRecommendation[] | { recommendations?: PeerRecommendation[] }
-        >(recsRes);
+        if (statsResult.status === 'fulfilled') {
+          const statsPayload = unwrapData<DashboardStats>(statsResult.value);
+          setStats(statsPayload || null);
+        } else {
+          console.error('Failed to load dashboard stats:', statsResult.reason);
+          setStats(null);
+        }
 
-        setStats(statsPayload || null);
-        setRecommendations(
-          Array.isArray(recommendationPayload)
-            ? recommendationPayload
-            : recommendationPayload?.recommendations || []
-        );
+        if (recsResult.status === 'fulfilled') {
+          const recommendationPayload = unwrapData<
+            PeerRecommendation[] | { recommendations?: PeerRecommendation[] }
+          >(recsResult.value);
+          setRecommendations(normalizePeerRecommendations(recommendationPayload));
+        } else {
+          console.error('Failed to load peer recommendations:', recsResult.reason);
+          setRecommendations([]);
+        }
       } catch (err: any) {
         console.error('Failed to load dashboard data:', err);
         setError('Unable to load dashboard data. Please try again later.');

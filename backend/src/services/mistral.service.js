@@ -39,14 +39,29 @@ async function callMistral(systemPrompt, userContent) {
 }
 
 /**
- * Summarizes the given content into 3-5 clear, concise bullet points.
+ * Summarizes and polishes the given content into a compact learning brief.
  * @param {string} content - The content to summarize.
- * @returns {Promise<string>} The summary as a bullet-point string.
+ * @returns {Promise<string>} The summary as a structured plain-text brief.
  */
 async function summarizeContent(content) {
   try {
-    const systemPrompt =
-      'You are an educational content summarizer. Summarize the following content into 3-5 clear, concise bullet points. Focus on key concepts and takeaways.';
+    const systemPrompt = `You create polished executive learning summaries.
+Shorten the source while preserving meaning, clarity, and value.
+For one-page content, produce about 180-320 words.
+Format:
+Polished Summary:
+1 strong paragraph
+
+Key Takeaways:
+- 4 to 7 specific, high-signal bullets
+
+Why It Matters:
+- 1 to 3 practical impact bullets
+
+Recommended Next Steps:
+- 1 to 3 concrete actions, or "- None"
+
+Use plain text only. Do not invent facts. Do not make the answer too tiny.`;
     const summary = await callMistral(systemPrompt, content);
     return summary;
   } catch (error) {

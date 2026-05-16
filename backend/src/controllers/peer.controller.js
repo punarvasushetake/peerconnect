@@ -7,6 +7,11 @@ const { createNotification } = require('../services/notification.service');
 
 const SESSION_REQUEST_EXPIRY_MINUTES = Number(process.env.SESSION_REQUEST_EXPIRY_MINUTES || 15);
 const PENDING_SESSION_STATUSES = ['pending', 'accepted'];
+const JITSI_DOMAIN = (process.env.JITSI_DOMAIN || 'meet.jit.si').replace(/^https?:\/\//, '').replace(/\/$/, '');
+const JITSI_APP_ID = (process.env.JITSI_APP_ID || '').replace(/^\/+|\/+$/g, '');
+
+const buildJitsiRoomName = (roomName) => (JITSI_APP_ID ? `${JITSI_APP_ID}/${roomName}` : roomName);
+const buildJitsiJoinUrl = (roomName) => `https://${JITSI_DOMAIN}/${buildJitsiRoomName(roomName)}`;
 
 const getAuthUserEmail = async (userId) => {
   const { data, error } = await supabase.auth.admin.getUserById(userId);
@@ -357,7 +362,7 @@ const requestPeerSession = async (req, res) => {
     }
 
     const roomName = `peer-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    const joinUrl = `https://meet.jit.si/${roomName}`;
+    const joinUrl = buildJitsiJoinUrl(roomName);
     const expiresAt = new Date(Date.now() + SESSION_REQUEST_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
     const { data: session, error: sessionError } = await supabase
@@ -769,6 +774,7 @@ module.exports = {
   listPeerSessions,
   listIncomingSessionRequests,
   requestPeerSession,
+  createPeerSession: requestPeerSession,
   acceptPeerSession,
   declinePeerSession,
   cancelPeerSession,

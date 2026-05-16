@@ -3,10 +3,10 @@ const { ApiError } = require('../utils/apiError');
 const { MISTRAL_API_KEY, MISTRAL_API_URL, MISTRAL_MODEL } = require('../config/mistral');
 const {
   searchSemanticDocuments,
-  recommendPeersSemantic,
   generateQuizFromSemantic,
   askRagQuestion,
 } = require('../services/semantic.service');
+const { getRecommendedPeers } = require('../services/recommendation.service');
 
 /**
  * Helper: call Mistral chat completions API.
@@ -152,6 +152,30 @@ const logAIUsage = async ({ userId, actionType, promptSummary, latencyMs }) => {
   }
 };
 
+const answerGeneralQuestion = async (query) =>
+  callMistral(
+    `You are a helpful AI assistant for a peer-learning platform.
+Answer the user's question clearly using your general knowledge.
+
+Format:
+Answer:
+- Give a direct, useful answer in 3 to 6 bullets or short paragraphs.
+
+Helpful Details:
+- Add important context, examples, steps, or cautions if useful.
+
+Next Steps:
+- Give 1 to 3 practical next steps when applicable, or "- None".
+
+Rules:
+- Be accurate and practical.
+- If the question may need current/live data, say that current data should be verified.
+- Do not claim the answer came from the local repository unless repository context is provided.
+- Use plain text only.`,
+    `Question: ${query}`,
+    { temperature: 0.3, maxTokens: 1200 }
+  );
+
 /**
  * Summarize content using Mistral.
  */
@@ -164,27 +188,44 @@ const summarize = async (req, res) => {
       throw new ApiError(400, 'Content is required');
     }
 
+    const plainContent = stripHtml(content);
     const summary = await callMistral(
-      `You create clean study summaries.
+      `You create polished executive learning summaries for a peer-learning platform.
+Your job is to shorten the source while preserving the useful meaning, clarity, and value.
+
+Output must be effective for a busy learner or supervisor to read quickly.
+If the source is about one page, produce a compact but rich summary of about 180-320 words.
+If the source is very short, still improve the writing and capture every important point without padding.
+
 Format every answer exactly like this:
-Overview:
-- one short sentence
+Polished Summary:
+Write 1 strong paragraph that captures the core idea, context, and value.
 
-Key Points:
-- 3 to 5 concise bullets
+Key Takeaways:
+- 4 to 7 brushed, high-signal bullets
+- each bullet should be specific, useful, and easy to remember
+- include important terms, decisions, steps, or warnings from the source
 
-Action Items:
-- 1 to 3 practical next steps, or "- None" if not applicable
+Why It Matters:
+- 1 to 3 bullets explaining the practical importance or impact
 
-Use plain text only. Do not invent facts that are not in the source.`,
-      `Summarize this content:\n\n${content}`,
-      { temperature: 0.2, maxTokens: 900 }
+Recommended Next Steps:
+- 1 to 3 concrete actions, or "- None" if the source has no action
+
+Rules:
+- Use plain text only.
+- Do not invent facts that are not in the source.
+- Do not make the answer too tiny.
+- Do not include generic filler like "this content discusses".
+- Prefer clear professional language over vague academic wording.`,
+      `Summarize and polish this source content:\n\n${plainContent}`,
+      { temperature: 0.25, maxTokens: 1400 }
     );
 
     await logAIUsage({
       userId: req.user?.id,
       actionType: 'summary',
-      promptSummary: content.slice(0, 500),
+      promptSummary: plainContent.slice(0, 500),
       latencyMs: Date.now() - startedAt,
     });
 
@@ -292,12 +333,26 @@ const intelligentSearch = async (req, res) => {
     const articles = await getRankedArticles(query, 10);
 
     if (articles.length === 0) {
+      let answer;
+      try {
+        answer = await answerGeneralQuestion(query);
+      } catch {
+        answer = 'I could not find matching repository resources, and the AI answer service is unavailable right now.';
+      }
+
+      await logAIUsage({
+        userId: req.user?.id,
+        actionType: 'search-general',
+        promptSummary: query.slice(0, 500),
+        latencyMs: Date.now() - startedAt,
+      });
+
       return res.json({
         success: true,
         data: {
           results: [],
-          answer: '',
-          explanation: 'No repository resources matched your query. Try broader words or add more content.',
+          answer,
+          explanation: 'Answered using the AI model because no matching repository resources were found.',
         },
       });
     }
@@ -336,20 +391,25 @@ const intelligentSearch = async (req, res) => {
       : 'Ranked using title, tags, category, and resource content.';
     try {
       answer = await callMistral(
-        `You answer repository search queries using only the provided results.
+        `You answer user questions using both general knowledge and repository search results.
+Use the repository results when they are relevant, but do not limit the answer to them.
 Return:
 Answer:
-- 2 to 4 bullets that directly answer the query
+- a clear, useful answer in 3 to 6 bullets or short paragraphs
 
-Best Matches:
-- mention the most useful resource titles
+Repository Matches:
+- mention the most useful local resource titles, or "- None" if they do not materially help
 
-If the results are weak, say that clearly.`,
+Next Steps:
+- 1 to 3 practical next steps when applicable
+
+If the repository results are weak, say that the answer is mainly from the AI model.
+If the question may need current/live data, say that current data should be verified.`,
         `Query: ${query}\n\nRepository results:\n${articlesContext}`,
-        { temperature: 0.25, maxTokens: 700 }
+        { temperature: 0.3, maxTokens: 1200 }
       );
     } catch {
-      answer = `I found ${rankedArticles.length} matching resource${rankedArticles.length === 1 ? '' : 's'} for "${query}". Open the best matches below for details.`;
+      answer = `I found ${rankedArticles.length} matching resource${rankedArticles.length === 1 ? '' : 's'} for "${query}", but the AI answer service is unavailable. Open the best matches below for details.`;
     }
 
     res.json({
@@ -402,66 +462,11 @@ const getRecommendations = async (req, res) => {
       });
     }
 
-    const skillIds = learningSkills.map((s) => s.skill_id);
-
-    // Find users teaching those skills
-    const { data: teachers, error: tError } = await supabase
-      .from('user_skills')
-      .select('*, skills(name, category), profiles(id, full_name, avatar_url, headline)')
-      .in('skill_id', skillIds)
-      .eq('is_teaching', true)
-      .neq('user_id', userId);
-
-    if (tError) throw new ApiError(400, tError.message);
-
-    // Group by user to avoid duplicates
-    const userMap = new Map();
-    for (const t of teachers) {
-      const uid = t.profiles?.id;
-      if (!uid) continue;
-      if (!userMap.has(uid)) {
-        userMap.set(uid, {
-          user: t.profiles,
-          teaching_skills: [],
-        });
-      }
-      userMap.get(uid).teaching_skills.push({
-        skill_name: t.skills?.name,
-        proficiency_level: t.proficiency_level,
-      });
-    }
-
-    const recommendations = Array.from(userMap.values());
-    const learningSkillNames = learningSkills
-      .map((item) => item.skills?.name)
-      .filter(Boolean);
-
-    const semanticPeerRanking = await recommendPeersSemantic(
-      learningSkillNames,
-      recommendations.map((item) => ({
-        id: item.user?.id,
-        text: `${item.user?.headline || ''}\n${item.teaching_skills.map((s) => s.skill_name).join(', ')}`,
-      }))
-    );
-
-    let rankedRecommendations = recommendations;
-    if (semanticPeerRanking?.ranked?.length) {
-      const recById = new Map(recommendations.map((item) => [String(item.user?.id), item]));
-      rankedRecommendations = semanticPeerRanking.ranked
-        .map((row) => recById.get(String(row.id)))
-        .filter(Boolean);
-
-      const includedIds = new Set(rankedRecommendations.map((item) => String(item.user?.id)));
-      for (const rec of recommendations) {
-        if (!includedIds.has(String(rec.user?.id))) {
-          rankedRecommendations.push(rec);
-        }
-      }
-    }
+    const rankedRecommendations = await getRecommendedPeers(userId, 6);
 
     await logAIUsage({
       userId,
-      actionType: semanticPeerRanking?.ranked?.length ? 'recommend-peer-semantic' : 'recommend-peer',
+      actionType: 'recommend-peer',
       promptSummary: `learning_skills_count=${learningSkills.length}`,
       latencyMs: Date.now() - startedAt,
     });

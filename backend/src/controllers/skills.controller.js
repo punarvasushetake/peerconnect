@@ -129,12 +129,14 @@ const addUserSkill = async (req, res) => {
     if (error) throw new ApiError(400, error.message);
 
     // Log activity with 10 XP
-    await supabase.from('activity_log').insert({
+    const { error: activityError } = await supabase.from('activity_log').insert({
       user_id: userId,
       action_type: 'skill_added',
-      description: `Added a new skill`,
+      entity_type: 'skill',
+      entity_id: skill_id,
       xp_earned: 10,
     });
+    if (activityError) console.error('Failed to log skill activity:', activityError.message);
 
     // Update user XP
     const { data: profile } = await supabase

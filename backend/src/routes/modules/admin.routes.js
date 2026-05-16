@@ -13,5 +13,6 @@ router.get('/admin/resources', auth, requireAdmin, adminController.getResources)
 router.get('/admin/sessions', auth, requireAdmin, adminController.getSessions);
 router.get('/admin/ai-usage', auth, requireAdmin, adminController.getAIUsage);
 router.get('/admin/reports', auth, requireAdmin, adminController.getReports);
+router.get('/admin/opportunity-readiness', auth, requireAdmin, adminController.getOpportunityReadiness);
 
 module.exports = router;

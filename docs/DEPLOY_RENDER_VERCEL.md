@@ -51,6 +51,8 @@ In `peer-connect-backend` service, fill these:
 - `SUPABASE_JWT_SECRET` = `<your-supabase-jwt-secret-if-used>`
 - `MISTRAL_API_KEY` = `<your-mistral-key>`
 - `AI_SERVICE_URL` = `https://<peer-connect-ai-service-url>`
+- `JITSI_DOMAIN` = `<your-jitsi-service-domain>` such as `8x8.vc` or your self-hosted Jitsi domain
+- `JITSI_APP_ID` = `<your-jaas-app-id>` if your Jitsi provider requires a room prefix
 
 `MISTRAL_MODEL`, `AI_SERVICE_TIMEOUT_MS`, bucket names are already set in `render.yaml`.
 
@@ -76,6 +78,8 @@ Both should return `status: ok`.
 - `NEXT_PUBLIC_SOCKET_URL` = `https://<render-backend-url>`
 - `NEXT_PUBLIC_SUPABASE_URL` = `https://ezwizxrrakjfmmfbjivj.supabase.co`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = `<your-supabase-publishable-key>`
+- `NEXT_PUBLIC_JITSI_DOMAIN` = same value as backend `JITSI_DOMAIN`
+- `NEXT_PUBLIC_JITSI_APP_ID` = same value as backend `JITSI_APP_ID`, if used
 
 Deploy.
 
@@ -114,5 +118,8 @@ This ensures CORS + Socket.IO allow your Vercel domain.
   - Ensure `NEXT_PUBLIC_SOCKET_URL` is exactly backend base URL (no `/api/v1`).
 - `AI features not working`:
   - Ensure `AI_SERVICE_URL` points to Render AI service URL.
+- Jitsi says the room is only a 5-minute demo:
+  - Set `JITSI_DOMAIN` and `NEXT_PUBLIC_JITSI_DOMAIN` to a real Jitsi service or self-hosted domain, not `meet.jit.si`.
+  - If using Jitsi-as-a-Service, also set `JITSI_APP_ID` and `NEXT_PUBLIC_JITSI_APP_ID`.
 - `Supabase auth/data errors`:
   - Re-check Supabase URL + keys in both Render and Vercel env vars.

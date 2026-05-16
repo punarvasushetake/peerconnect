@@ -5,11 +5,12 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { hasAdminAccess } from '@/lib/adminAccess';
+import { hasAdminAccess, isConfiguredAdmin } from '@/lib/adminAccess';
 
 const navItems = [
   { label: 'Dashboard', href: '/admin/dashboard' },
   { label: 'Employees', href: '/admin/employees' },
+  { label: 'Opportunities', href: '/admin/opportunity-readiness' },
   { label: 'Resources', href: '/admin/resources' },
   { label: 'Performance', href: '/admin/performance-analytics' },
   { label: 'Peer Sessions', href: '/admin/peer-session-analytics' },
@@ -28,6 +29,14 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
     if (!user) {
       router.push('/login');
+      return;
+    }
+
+    if (!isConfiguredAdmin(user.id)) {
+      toast.error('Admin access required');
+      setAllowed(false);
+      setCheckingAccess(false);
+      router.replace('/dashboard');
       return;
     }
 

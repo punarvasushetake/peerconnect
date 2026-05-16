@@ -2,7 +2,12 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { Session, User } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
+import {
+  clearStoredSupabaseSession,
+  ensureSupabaseReachable,
+  getCurrentSession,
+  supabase,
+} from '@/lib/supabase';
 import { Profile } from '@/types';
 import api from '@/lib/api';
 import { unwrapData } from '@/lib/apiResponse';
@@ -54,10 +59,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
+    const handleInvalidRefreshToken = (event: PromiseRejectionEvent) => {
+      const message =
+        event.reason instanceof Error ? event.reason.message : String(event.reason || '');
+
+      if (message.includes('Invalid Refresh Token') || message.includes('Refresh Token Not Found')) {
+        event.preventDefault();
+        clearStoredSupabaseSession();
+        clearGuestSession();
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+        setLoading(false);
+      }
+    };
+
+    window.addEventListener('unhandledrejection', handleInvalidRefreshToken);
+
     const initializeAuth = async () => {
       const localGuest = getGuestSession();
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const session = await getCurrentSession();
         setSession(session);
         setUser(session?.user ?? null);
         if (session?.user) {
@@ -95,10 +117,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      window.removeEventListener('unhandledrejection', handleInvalidRefreshToken);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signUp = async (email: string, password: string, fullName: string) => {
+    await ensureSupabaseReachable();
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -109,12 +135,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     clearGuestSession();
+    await ensureSupabaseReachable();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
   };
 
   const signInWithGoogle = async () => {
     clearGuestSession();
+    await ensureSupabaseReachable();
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: `${window.location.origin}/callback` },
@@ -124,6 +152,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInAsGuest = async () => {
     try {
+      await ensureSupabaseReachable();
       const { error } = await supabase.auth.signInAnonymously({
         options: {
           data: {
@@ -146,6 +175,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Ignore network failures so local guest logout still works.
     }
+    clearStoredSupabaseSession();
     setUser(null);
     setProfile(null);
     setSession(null);

@@ -121,12 +121,14 @@ const submitAttempt = async (req, res) => {
 
     // If score >= 70, log activity with 50 XP
     if (score >= 70) {
-      await supabase.from('activity_log').insert({
+      const { error: activityError } = await supabase.from('activity_log').insert({
         user_id: userId,
         action_type: 'quiz_passed',
-        description: `Passed quiz: ${quiz.title} with score ${score}%`,
+        entity_type: 'quiz',
+        entity_id: quizId,
         xp_earned: 50,
       });
+      if (activityError) console.error('Failed to log quiz activity:', activityError.message);
 
       // Update user XP
       const { data: profile } = await supabase

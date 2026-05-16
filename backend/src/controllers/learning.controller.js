@@ -72,12 +72,14 @@ const createCourse = async (req, res) => {
     if (error) throw new ApiError(400, error.message);
 
     // Log activity with 15 XP
-    await supabase.from('activity_log').insert({
+    const { error: activityError } = await supabase.from('activity_log').insert({
       user_id: userId,
       action_type: 'course_created',
-      description: `Created course: ${title}`,
+      entity_type: 'course',
+      entity_id: data.id,
       xp_earned: 15,
     });
+    if (activityError) console.error('Failed to log course activity:', activityError.message);
 
     // Update user XP
     const { data: profile } = await supabase
@@ -299,12 +301,14 @@ const enrollInCourse = async (req, res) => {
     if (error) throw new ApiError(400, error.message);
 
     // Log activity with 15 XP
-    await supabase.from('activity_log').insert({
+    const { error: activityError } = await supabase.from('activity_log').insert({
       user_id: userId,
       action_type: 'course_enrolled',
-      description: `Enrolled in a course`,
+      entity_type: 'course',
+      entity_id: courseId,
       xp_earned: 15,
     });
+    if (activityError) console.error('Failed to log enrollment activity:', activityError.message);
 
     // Update user XP
     const { data: profile } = await supabase
@@ -367,12 +371,14 @@ const updateProgress = async (req, res) => {
 
     // If completed, log activity with 100 XP
     if (progress_pct === 100) {
-      await supabase.from('activity_log').insert({
+      const { error: activityError } = await supabase.from('activity_log').insert({
         user_id: userId,
         action_type: 'course_completed',
-        description: `Completed a course`,
+        entity_type: 'course',
+        entity_id: data.course_id,
         xp_earned: 100,
       });
+      if (activityError) console.error('Failed to log course completion activity:', activityError.message);
 
       const { data: profile } = await supabase
         .from('profiles')

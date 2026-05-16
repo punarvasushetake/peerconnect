@@ -34,6 +34,10 @@ services:
         sync: false
       - key: AI_SERVICE_TIMEOUT_MS
         value: 8000
+      - key: JITSI_DOMAIN
+        sync: false
+      - key: JITSI_APP_ID
+        sync: false
       - key: SUPABASE_AVATAR_BUCKET
         value: avatars
       - key: SUPABASE_RESOURCE_BUCKET
