@@ -280,6 +280,192 @@ const getReports = async (req, res) => {
   }
 };
 
+const groupBy = (rows, key) =>
+  (rows || []).reduce((acc, row) => {
+    const value = row[key];
+    if (!value) return acc;
+    if (!acc[value]) acc[value] = [];
+    acc[value].push(row);
+    return acc;
+  }, {});
+
+const average = (values) => {
+  const numeric = values.map((value) => Number(value || 0)).filter((value) => Number.isFinite(value));
+  if (numeric.length === 0) return 0;
+  return numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
+};
+
+const getOpportunityRecommendation = ({ skills, readinessScore, completedCourses, avgFeedback }) => {
+  const skillNames = skills.map((skill) => skill.name.toLowerCase());
+  const has = (terms) => terms.some((term) => skillNames.some((name) => name.includes(term)));
+
+  if (readinessScore >= 85 && has(['machine learning', 'python', 'data analysis', 'statistics'])) {
+    return 'Assign ML/data project or analytics opportunity';
+  }
+  if (readinessScore >= 85 && has(['system design', 'node', 'typescript', 'backend', 'go'])) {
+    return 'Assign backend/API ownership opportunity';
+  }
+  if (readinessScore >= 80 && has(['react', 'javascript', 'typescript'])) {
+    return 'Assign frontend feature ownership opportunity';
+  }
+  if (readinessScore >= 75 && avgFeedback >= 4) {
+    return 'Invite as peer mentor for guided learning sessions';
+  }
+  if (completedCourses > 0) {
+    return 'Recommend supervised project task with mentor review';
+  }
+  return 'Recommend learning path before opportunity assignment';
+};
+
+const getOpportunityReadiness = async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+
+    const { data: users, error: usersError } = await supabase
+      .from('profiles')
+      .select('id, full_name, headline, location, xp_points, level')
+      .order('xp_points', { ascending: false })
+      .limit(limit);
+    if (usersError) throw new ApiError(400, usersError.message);
+
+    const userIds = (users || []).map((user) => user.id);
+    if (userIds.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const [
+      skillsResult,
+      enrollmentsResult,
+      quizAttemptsResult,
+      feedbackResult,
+      articlesResult,
+      sessionsResult,
+    ] = await Promise.all([
+      supabase
+        .from('user_skills')
+        .select('user_id, proficiency_level, is_teaching, is_learning, skills(id, name, category)')
+        .in('user_id', userIds),
+      supabase
+        .from('enrollments')
+        .select('user_id, progress_pct, completed_at, courses(id, title, category, difficulty)')
+        .in('user_id', userIds),
+      supabase
+        .from('quiz_attempts')
+        .select('user_id, score')
+        .in('user_id', userIds),
+      supabase
+        .from('feedback')
+        .select('to_user_id, rating')
+        .in('to_user_id', userIds),
+      supabase
+        .from('articles')
+        .select('author_id')
+        .in('author_id', userIds),
+      supabase
+        .from('video_sessions')
+        .select('requester_id, mentor_user_id, status')
+        .or(`requester_id.in.(${userIds.join(',')}),mentor_user_id.in.(${userIds.join(',')})`),
+    ]);
+
+    for (const result of [skillsResult, enrollmentsResult, quizAttemptsResult, feedbackResult, articlesResult, sessionsResult]) {
+      if (result.error) throw new ApiError(400, result.error.message);
+    }
+
+    const skillsByUser = groupBy(skillsResult.data, 'user_id');
+    const enrollmentsByUser = groupBy(enrollmentsResult.data, 'user_id');
+    const quizAttemptsByUser = groupBy(quizAttemptsResult.data, 'user_id');
+    const feedbackByUser = groupBy(feedbackResult.data, 'to_user_id');
+    const articlesByUser = groupBy(articlesResult.data, 'author_id');
+
+    const sessionsByUser = {};
+    for (const session of sessionsResult.data || []) {
+      for (const userId of [session.requester_id, session.mentor_user_id]) {
+        if (!userId) continue;
+        if (!sessionsByUser[userId]) sessionsByUser[userId] = [];
+        sessionsByUser[userId].push(session);
+      }
+    }
+
+    const readiness = (users || []).map((user) => {
+      const skillRows = skillsByUser[user.id] || [];
+      const enrollmentRows = enrollmentsByUser[user.id] || [];
+      const quizRows = quizAttemptsByUser[user.id] || [];
+      const feedbackRows = feedbackByUser[user.id] || [];
+      const articleRows = articlesByUser[user.id] || [];
+      const sessionRows = sessionsByUser[user.id] || [];
+
+      const skills = skillRows
+        .map((row) => ({
+          name: row.skills?.name,
+          category: row.skills?.category,
+          proficiency_level: row.proficiency_level || 1,
+          is_teaching: Boolean(row.is_teaching),
+          is_learning: Boolean(row.is_learning),
+        }))
+        .filter((skill) => skill.name);
+
+      const avgSkillProficiency = average(skills.map((skill) => skill.proficiency_level));
+      const avgCourseProgress = average(enrollmentRows.map((row) => row.progress_pct));
+      const completedCourses = enrollmentRows.filter((row) => row.completed_at || Number(row.progress_pct || 0) >= 100).length;
+      const avgQuizScore = average(quizRows.map((row) => row.score));
+      const avgFeedback = average(feedbackRows.map((row) => row.rating));
+      const completedSessions = sessionRows.filter((row) => row.status === 'ended' || row.status === 'accepted').length;
+
+      const skillScore = Math.min(100, (avgSkillProficiency / 5) * 100);
+      const learningScore = Math.min(100, avgCourseProgress);
+      const quizScore = Math.min(100, avgQuizScore);
+      const feedbackScore = Math.min(100, (avgFeedback / 5) * 100);
+      const contributionScore = Math.min(100, completedSessions * 12 + articleRows.length * 10);
+      const xpScore = Math.min(100, Number(user.xp_points || 0) / 10);
+
+      const readinessScore = Math.round(
+        skillScore * 0.25 +
+          learningScore * 0.2 +
+          quizScore * 0.2 +
+          feedbackScore * 0.15 +
+          contributionScore * 0.1 +
+          xpScore * 0.1
+      );
+
+      const readinessBand =
+        readinessScore >= 80 ? 'Ready' : readinessScore >= 55 ? 'Growing' : 'Needs Support';
+
+      return {
+        user,
+        readiness_score: readinessScore,
+        readiness_band: readinessBand,
+        recommended_opportunity: getOpportunityRecommendation({
+          skills,
+          readinessScore,
+          completedCourses,
+          avgFeedback,
+        }),
+        evidence: {
+          skills: skills.slice(0, 5),
+          completed_courses: completedCourses,
+          enrolled_courses: enrollmentRows.length,
+          average_course_progress: Number(avgCourseProgress.toFixed(1)),
+          quiz_attempts: quizRows.length,
+          average_quiz_score: Number(avgQuizScore.toFixed(1)),
+          peer_sessions: completedSessions,
+          average_feedback_rating: Number(avgFeedback.toFixed(2)),
+          resources_contributed: articleRows.length,
+        },
+      };
+    });
+
+    res.json({
+      success: true,
+      data: readiness.sort((a, b) => b.readiness_score - a.readiness_score),
+    });
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
 const DEMO_PASSWORD = 'PeerConnect@123';
 
 const DEMO_USERS = [
@@ -439,5 +625,6 @@ module.exports = {
   getSessions,
   getAIUsage,
   getReports,
+  getOpportunityReadiness,
   createDemoUsers,
 };

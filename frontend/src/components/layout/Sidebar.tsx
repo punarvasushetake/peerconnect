@@ -22,7 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { hasAdminAccess } from '@/lib/adminAccess';
+import { isConfiguredAdmin } from '@/lib/adminAccess';
 import Avatar from '@/components/ui/Avatar';
 import Badge from '@/components/ui/Badge';
 
@@ -68,24 +68,7 @@ export default function Sidebar({ open = false, onClose }: SidebarProps) {
   }, []);
 
   useEffect(() => {
-    let active = true;
-
-    const verifyAdmin = async () => {
-      if (!profile?.id) {
-        if (active) setCanAccessAdmin(false);
-        return;
-      }
-      const access = await hasAdminAccess();
-      if (active) {
-        setCanAccessAdmin(access);
-      }
-    };
-
-    verifyAdmin();
-
-    return () => {
-      active = false;
-    };
+    setCanAccessAdmin(isConfiguredAdmin(profile?.id));
   }, [profile?.id]);
 
   const handleSignOut = async () => {

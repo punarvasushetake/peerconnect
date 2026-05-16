@@ -1,6 +1,28 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
 
+const normalizeProficiencyLevel = (level) => {
+  const numericLevel = Number(level);
+  if (!Number.isInteger(numericLevel)) return 1;
+  return Math.min(Math.max(numericLevel, 1), 5);
+};
+
+const normalizeSkillFlags = ({ is_teaching, is_learning }) => {
+  const updates = {};
+
+  if (Boolean(is_teaching) && Boolean(is_learning)) {
+    throw new ApiError(400, 'A skill cannot be marked as both teaching and learning');
+  }
+
+  if (is_teaching !== undefined) updates.is_teaching = Boolean(is_teaching);
+  if (is_learning !== undefined) updates.is_learning = Boolean(is_learning);
+
+  if (updates.is_teaching) updates.is_learning = false;
+  if (updates.is_learning) updates.is_teaching = false;
+
+  return updates;
+};
+
 /**
  * List all skills, optional filter by category.
  */
@@ -119,9 +141,10 @@ const addUserSkill = async (req, res) => {
       .insert({
         user_id: userId,
         skill_id,
-        proficiency_level: proficiency_level || 3,
-        is_teaching: is_teaching || false,
-        is_learning: is_learning || false,
+        proficiency_level: normalizeProficiencyLevel(proficiency_level),
+        is_teaching: false,
+        is_learning: false,
+        ...normalizeSkillFlags({ is_teaching, is_learning }),
       })
       .select('*, skills(*)')
       .single();
@@ -129,12 +152,14 @@ const addUserSkill = async (req, res) => {
     if (error) throw new ApiError(400, error.message);
 
     // Log activity with 10 XP
-    await supabase.from('activity_log').insert({
+    const { error: activityError } = await supabase.from('activity_log').insert({
       user_id: userId,
       action_type: 'skill_added',
-      description: `Added a new skill`,
+      entity_type: 'skill',
+      entity_id: skill_id,
       xp_earned: 10,
     });
+    if (activityError) console.error('Failed to log skill activity:', activityError.message);
 
     // Update user XP
     const { data: profile } = await supabase
@@ -171,9 +196,8 @@ const updateUserSkill = async (req, res) => {
     const { proficiency_level, is_teaching, is_learning } = req.body;
 
     const updates = {};
-    if (proficiency_level !== undefined) updates.proficiency_level = proficiency_level;
-    if (is_teaching !== undefined) updates.is_teaching = is_teaching;
-    if (is_learning !== undefined) updates.is_learning = is_learning;
+    if (proficiency_level !== undefined) updates.proficiency_level = normalizeProficiencyLevel(proficiency_level);
+    Object.assign(updates, normalizeSkillFlags({ is_teaching, is_learning }));
 
     const { data, error } = await supabase
       .from('user_skills')

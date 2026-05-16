@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Sparkles,
   GraduationCap,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '@/lib/api';
@@ -112,7 +114,17 @@ export default function LearningHubPage() {
   /* ---- Create course modal state ---------------------------------- */
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [editingCourse, setEditingCourse] = useState<Course | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [form, setForm] = useState({
+    title: '',
+    description: '',
+    category: 'programming',
+    difficulty: 'beginner',
+    thumbnail_url: '',
+  });
+  const [editForm, setEditForm] = useState({
     title: '',
     description: '',
     category: 'programming',
@@ -198,6 +210,58 @@ export default function LearningHubPage() {
       toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to create course');
     } finally {
       setCreating(false);
+    }
+  }
+
+  function openEdit(course: Course) {
+    setEditingCourse(course);
+    setEditForm({
+      title: course.title,
+      description: course.description || '',
+      category: course.category || 'programming',
+      difficulty: course.difficulty || 'beginner',
+      thumbnail_url: course.thumbnail_url || '',
+    });
+  }
+
+  async function handleUpdate() {
+    if (!editingCourse) return;
+    if (!editForm.title.trim() || !editForm.description.trim()) {
+      toast.error('Title and description are required');
+      return;
+    }
+
+    try {
+      setUpdating(true);
+      await api.put(`/courses/${editingCourse.id}`, {
+        title: editForm.title,
+        description: editForm.description,
+        category: editForm.category,
+        difficulty: editForm.difficulty,
+        thumbnail_url: editForm.thumbnail_url || null,
+      });
+      toast.success('Course updated!');
+      setEditingCourse(null);
+      fetchCourses();
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to update course');
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function handleDelete(course: Course) {
+    if (!window.confirm(`Delete "${course.title}"? This cannot be undone.`)) return;
+
+    try {
+      setDeletingId(course.id);
+      await api.delete(`/courses/${course.id}`);
+      toast.success('Course deleted');
+      fetchCourses();
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to delete course');
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -290,6 +354,7 @@ export default function LearningHubPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map((course) => {
             const enrollment = getEnrollment(course.id);
+            const isOwner = profile?.id === course.created_by;
             return (
               <Card key={course.id} hover className="overflow-hidden flex flex-col">
                 {/* Thumbnail */}
@@ -333,7 +398,30 @@ export default function LearningHubPage() {
                   )}
 
                   <div className="mt-auto pt-2">
-                    {enrollment ? (
+                    {isOwner ? (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                        <p className="mb-2 text-xs font-medium text-slate-500">Your course</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            onClick={() => openEdit(course)}
+                          >
+                            <Pencil className="h-4 w-4 mr-1.5" />
+                            Edit
+                          </Button>
+                          <Button
+                            variant="danger"
+                            className="w-full"
+                            loading={deletingId === course.id}
+                            onClick={() => handleDelete(course)}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1.5" />
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    ) : enrollment ? (
                       <Link href={`/learning/${course.id}`} className="block">
                         <Button variant="secondary" className="w-full">
                           <Sparkles className="h-4 w-4 mr-1.5" />
@@ -440,6 +528,68 @@ export default function LearningHubPage() {
             </Button>
             <Button onClick={handleCreate} loading={creating}>
               Create Course
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Course Modal */}
+      <Modal isOpen={Boolean(editingCourse)} onClose={() => setEditingCourse(null)} title="Edit Course" size="lg">
+        <div className="space-y-4">
+          <Input
+            label="Title"
+            placeholder="Course title"
+            value={editForm.title}
+            onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+          />
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">Description</label>
+            <textarea
+              placeholder="Describe your course..."
+              value={editForm.description}
+              onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+              rows={3}
+              className="w-full border border-slate-200 rounded-lg px-4 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Category</label>
+              <select
+                value={editForm.category}
+                onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {SKILL_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Difficulty</label>
+              <select
+                value={editForm.difficulty}
+                onChange={(e) => setEditForm({ ...editForm, difficulty: e.target.value })}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {DIFFICULTY_LEVELS.map((d) => (
+                  <option key={d.value} value={d.value}>{d.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <Input
+            label="Thumbnail URL (optional)"
+            placeholder="https://example.com/image.jpg"
+            value={editForm.thumbnail_url}
+            onChange={(e) => setEditForm({ ...editForm, thumbnail_url: e.target.value })}
+          />
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="outline" onClick={() => setEditingCourse(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleUpdate} loading={updating}>
+              Save Changes
             </Button>
           </div>
         </div>

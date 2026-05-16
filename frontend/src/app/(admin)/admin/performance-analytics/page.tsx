@@ -84,17 +84,16 @@ export default function PerformanceAnalyticsPage() {
     []
   );
 
-  if (loading) {
-    return <Skeleton variant="rect" className="h-72" />;
-  }
-
-  const summaryCards = [
-    { label: 'Users', value: data?.summary?.total_users ?? 0 },
-    { label: 'Courses', value: data?.summary?.total_courses ?? 0 },
-    { label: 'Resources', value: data?.summary?.total_resources ?? 0 },
-    { label: 'Sessions', value: data?.summary?.total_sessions ?? 0 },
-    { label: 'Feedback', value: data?.summary?.total_feedback ?? 0 },
-  ];
+  const summaryCards = useMemo(
+    () => [
+      { label: 'Users', value: data?.summary?.total_users ?? 0 },
+      { label: 'Courses', value: data?.summary?.total_courses ?? 0 },
+      { label: 'Resources', value: data?.summary?.total_resources ?? 0 },
+      { label: 'Sessions', value: data?.summary?.total_sessions ?? 0 },
+      { label: 'Feedback', value: data?.summary?.total_feedback ?? 0 },
+    ],
+    [data?.summary]
+  );
 
   const summaryChartData = useMemo(
     () => ({
@@ -129,6 +128,10 @@ export default function PerformanceAnalyticsPage() {
     }),
     []
   );
+
+  if (loading) {
+    return <Skeleton variant="rect" className="h-72" />;
+  }
 
   return (
     <div className="space-y-6">

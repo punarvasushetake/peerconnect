@@ -62,6 +62,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 - `RESEND_API_KEY` (optional, required for real peer session request emails)
 - `EMAIL_FROM` (optional, defaults to Resend onboarding sender)
 - `SESSION_REQUEST_EXPIRY_MINUTES` (optional, defaults to 15)
+- `JITSI_DOMAIN` (required for production calls; use your Jitsi service or self-hosted domain instead of public demo `meet.jit.si`)
+- `JITSI_APP_ID` (optional, for Jitsi-as-a-Service room prefixes)
 
 For existing Supabase databases, run:
 
@@ -73,6 +75,8 @@ For existing Supabase databases, run:
 - `NEXT_PUBLIC_SOCKET_URL`
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_JITSI_DOMAIN` (same host as backend `JITSI_DOMAIN`)
+- `NEXT_PUBLIC_JITSI_APP_ID` (same value as backend `JITSI_APP_ID`, if used)
 
 ## Quality Commands
 

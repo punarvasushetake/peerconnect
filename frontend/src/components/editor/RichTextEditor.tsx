@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
+import Link from '@tiptap/extension-link';
 import Button from '@/components/ui/Button';
 
 interface RichTextEditorProps {
@@ -22,6 +23,15 @@ export default function RichTextEditor({
       StarterKit,
       Placeholder.configure({
         placeholder,
+      }),
+      Link.configure({
+        openOnClick: true,
+        autolink: true,
+        defaultProtocol: 'https',
+        HTMLAttributes: {
+          target: '_blank',
+          rel: 'noopener noreferrer',
+        },
       }),
     ],
     content: value || '',

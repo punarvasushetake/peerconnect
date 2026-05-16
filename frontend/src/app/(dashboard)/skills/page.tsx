@@ -30,6 +30,15 @@ interface UserSkill {
   skills?: SkillCatalog;
 }
 
+const normalizeUserSkill = (skill: UserSkill): UserSkill => ({
+  ...skill,
+  proficiency_level: Number.isInteger(Number(skill.proficiency_level))
+    ? Math.min(Math.max(Number(skill.proficiency_level), 1), 5)
+    : 1,
+  is_teaching: Boolean(skill.is_teaching),
+  is_learning: Boolean(skill.is_learning),
+});
+
 export default function SkillsPage() {
   const { user } = useAuth();
   const [catalog, setCatalog] = useState<SkillCatalog[]>([]);
@@ -38,9 +47,9 @@ export default function SkillsPage() {
   const [saving, setSaving] = useState(false);
 
   const [selectedSkillId, setSelectedSkillId] = useState('');
-  const [proficiency, setProficiency] = useState(3);
+  const [proficiency, setProficiency] = useState(1);
   const [isTeaching, setIsTeaching] = useState(false);
-  const [isLearning, setIsLearning] = useState(true);
+  const [isLearning, setIsLearning] = useState(false);
 
   const [newSkillName, setNewSkillName] = useState('');
   const [newSkillCategory, setNewSkillCategory] = useState('programming');
@@ -61,9 +70,16 @@ export default function SkillsPage() {
         api.get(`/user-skills/user/${user.id}`),
       ]);
 
-      setCatalog(unwrapData<SkillCatalog[]>(catalogRes) || []);
-      setUserSkills(unwrapData<UserSkill[]>(userSkillsRes) || []);
-      setSelectedSkillId((prev) => prev || (unwrapData<SkillCatalog[]>(catalogRes)?.[0]?.id ?? ''));
+      const catalogData = unwrapData<SkillCatalog[]>(catalogRes) || [];
+      const userSkillsData = (unwrapData<UserSkill[]>(userSkillsRes) || []).map(normalizeUserSkill);
+      const assignedIds = new Set(userSkillsData.map((skill) => skill.skill_id));
+      const firstUnassignedSkill = catalogData.find((skill) => !assignedIds.has(skill.id));
+
+      setCatalog(catalogData);
+      setUserSkills(userSkillsData);
+      setSelectedSkillId((prev) =>
+        prev && !assignedIds.has(prev) ? prev : firstUnassignedSkill?.id ?? ''
+      );
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to load skills');
     } finally {
@@ -111,6 +127,9 @@ export default function SkillsPage() {
         is_learning: isLearning,
       });
       await loadData();
+      setProficiency(1);
+      setIsTeaching(false);
+      setIsLearning(false);
       toast.success('Skill assigned successfully');
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to assign skill');
@@ -129,6 +148,30 @@ export default function SkillsPage() {
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to update skill');
     }
+  };
+
+  const handleTeachingChange = (checked: boolean) => {
+    setIsTeaching(checked);
+    if (checked) setIsLearning(false);
+  };
+
+  const handleLearningChange = (checked: boolean) => {
+    setIsLearning(checked);
+    if (checked) setIsTeaching(false);
+  };
+
+  const updateTeachingStatus = (item: UserSkill, checked: boolean) => {
+    updateUserSkill(item.id, {
+      is_teaching: checked,
+      ...(checked ? { is_learning: false } : {}),
+    });
+  };
+
+  const updateLearningStatus = (item: UserSkill, checked: boolean) => {
+    updateUserSkill(item.id, {
+      is_learning: checked,
+      ...(checked ? { is_teaching: false } : {}),
+    });
   };
 
   const removeUserSkill = async (id: string) => {
@@ -195,7 +238,8 @@ export default function SkillsPage() {
                 <input
                   type="checkbox"
                   checked={isTeaching}
-                  onChange={(e) => setIsTeaching(e.target.checked)}
+                  disabled={isLearning}
+                  onChange={(e) => handleTeachingChange(e.target.checked)}
                 />
                 I can teach this
               </label>
@@ -203,7 +247,8 @@ export default function SkillsPage() {
                 <input
                   type="checkbox"
                   checked={isLearning}
-                  onChange={(e) => setIsLearning(e.target.checked)}
+                  disabled={isTeaching}
+                  onChange={(e) => handleLearningChange(e.target.checked)}
                 />
                 I am learning this
               </label>
@@ -295,7 +340,8 @@ export default function SkillsPage() {
                     <input
                       type="checkbox"
                       checked={item.is_teaching}
-                      onChange={(e) => updateUserSkill(item.id, { is_teaching: e.target.checked })}
+                      disabled={item.is_learning}
+                      onChange={(e) => updateTeachingStatus(item, e.target.checked)}
                     />
                     Teaching
                   </label>
@@ -304,7 +350,8 @@ export default function SkillsPage() {
                     <input
                       type="checkbox"
                       checked={item.is_learning}
-                      onChange={(e) => updateUserSkill(item.id, { is_learning: e.target.checked })}
+                      disabled={item.is_teaching}
+                      onChange={(e) => updateLearningStatus(item, e.target.checked)}
                     />
                     Learning
                   </label>

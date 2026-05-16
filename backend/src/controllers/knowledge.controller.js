@@ -70,12 +70,14 @@ const createArticle = async (req, res) => {
     if (error) throw new ApiError(400, error.message);
 
     // Log activity with 75 XP
-    await supabase.from('activity_log').insert({
+    const { error: activityError } = await supabase.from('activity_log').insert({
       user_id: userId,
       action_type: 'article_created',
-      description: `Published article: ${title}`,
+      entity_type: 'article',
+      entity_id: data.id,
       xp_earned: 75,
     });
+    if (activityError) console.error('Failed to log article activity:', activityError.message);
 
     // Update user XP
     const { data: profile } = await supabase
@@ -120,10 +122,11 @@ const getArticleById = async (req, res) => {
     if (articleError) throw new ApiError(404, 'Article not found');
 
     // Increment views_count
-    await supabase
+    const { error: viewUpdateError } = await supabase
       .from('articles')
       .update({ views_count: (article.views_count || 0) + 1 })
       .eq('id', id);
+    if (viewUpdateError) throw new ApiError(400, viewUpdateError.message);
 
     res.json({
       success: true,

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -113,6 +113,8 @@ export default function CourseDetailPage() {
   const [loading, setLoading] = useState(true);
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
   const [completedResources, setCompletedResources] = useState<Set<string>>(new Set());
+  const [viewingResourceId, setViewingResourceId] = useState<string | null>(null);
+  const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* ---- AI features state ------------------------------------------ */
   const [aiSummary, setAiSummary] = useState<string | null>(null);
@@ -169,6 +171,24 @@ export default function CourseDetailPage() {
 
   const isCreator = profile?.id === course?.created_by;
 
+  useEffect(() => {
+    if (!enrollment || resources.length === 0 || completedResources.size > 0) return;
+
+    const completedCount = Math.min(
+      resources.length,
+      Math.floor((enrollment.progress_pct / 100) * resources.length)
+    );
+    if (completedCount === 0) return;
+
+    setCompletedResources(new Set(resources.slice(0, completedCount).map((resource) => resource.id)));
+  }, [completedResources.size, enrollment, resources]);
+
+  useEffect(() => {
+    return () => {
+      if (completionTimerRef.current) clearTimeout(completionTimerRef.current);
+    };
+  }, []);
+
   /* ---- Enroll ----------------------------------------------------- */
   async function handleEnroll() {
     try {
@@ -180,24 +200,51 @@ export default function CourseDetailPage() {
     }
   }
 
-  /* ---- Select resource & track progress --------------------------- */
-  async function handleSelectResource(resource: Resource) {
+  /* ---- Select resource -------------------------------------------- */
+  function handleSelectResource(resource: Resource) {
+    setSelectedResource(resource);
+  }
+
+  function getRequiredViewMs(resource: Resource) {
+    if (!resource.duration_minutes) return 30000;
+    return Math.max(15000, resource.duration_minutes * 60 * 1000);
+  }
+
+  function handleOpenResource(resource: Resource) {
     setSelectedResource(resource);
 
-    if (enrollment && !completedResources.has(resource.id)) {
-      const newCompleted = new Set(completedResources);
-      newCompleted.add(resource.id);
-      setCompletedResources(newCompleted);
+    if (resource.url) {
+      window.open(resource.url, '_blank', 'noopener,noreferrer');
+    }
 
-      const progressPct = Math.round((newCompleted.size / resources.length) * 100);
-      try {
-        await api.put(`/enrollments/${enrollment.id}/progress`, {
-          progress_pct: progressPct,
-        });
-        setEnrollment({ ...enrollment, progress_pct: progressPct });
-      } catch (err: any) {
-        console.error('Failed to update progress:', err);
-      }
+    if (!enrollment || completedResources.has(resource.id)) return;
+
+    if (completionTimerRef.current) clearTimeout(completionTimerRef.current);
+    setViewingResourceId(resource.id);
+
+    completionTimerRef.current = setTimeout(() => {
+      handleCompleteResource(resource);
+    }, getRequiredViewMs(resource));
+  }
+
+  async function handleCompleteResource(resource: Resource) {
+    if (!enrollment || completedResources.has(resource.id)) return;
+
+    const newCompleted = new Set(completedResources);
+    newCompleted.add(resource.id);
+
+    const progressPct = Math.round((newCompleted.size / resources.length) * 100);
+    try {
+      const res = await api.put(`/enrollments/${enrollment.id}/progress`, {
+        progress_pct: progressPct,
+      });
+      setCompletedResources(newCompleted);
+      setEnrollment(unwrapData<Enrollment>(res) || { ...enrollment, progress_pct: progressPct });
+      setViewingResourceId(null);
+      toast.success(`Progress updated to ${progressPct}%`);
+    } catch (err: any) {
+      console.error('Failed to update progress:', err);
+      toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to update progress');
     }
   }
 
@@ -320,14 +367,13 @@ export default function CourseDetailPage() {
               <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400">
                 <ExternalLink className="h-12 w-12 mb-3" />
                 <p className="text-sm font-medium">{selectedResource.title}</p>
-                <a
-                  href={selectedResource.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => handleOpenResource(selectedResource)}
                   className="mt-2 text-blue-500 hover:text-blue-600 text-sm font-medium"
                 >
                   Open Resource
-                </a>
+                </button>
               </div>
             </div>
           ) : (
@@ -356,13 +402,49 @@ export default function CourseDetailPage() {
 
           {/* Selected resource info */}
           {selectedResource && (
-            <div>
-              <h2 className="text-xl font-semibold text-slate-800">{selectedResource.title}</h2>
-              {selectedResource.duration_minutes && (
-                <p className="text-sm text-slate-500 mt-1 flex items-center gap-1">
-                  <Clock className="h-4 w-4" />
-                  {selectedResource.duration_minutes} min
-                </p>
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-800">{selectedResource.title}</h2>
+                {selectedResource.duration_minutes && (
+                  <p className="text-sm text-slate-500 mt-1 flex items-center gap-1">
+                    <Clock className="h-4 w-4" />
+                    {selectedResource.duration_minutes} min
+                  </p>
+                )}
+              </div>
+
+              {enrollment && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {!completedResources.has(selectedResource.id) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleOpenResource(selectedResource)}
+                    >
+                      {selectedResource.youtube_id ? (
+                        <Play className="h-4 w-4 mr-1.5" />
+                      ) : (
+                        <ExternalLink className="h-4 w-4 mr-1.5" />
+                      )}
+                      {viewingResourceId === selectedResource.id ? 'Viewing...' : 'Start Resource'}
+                    </Button>
+                  )}
+
+                  {completedResources.has(selectedResource.id) ? (
+                    <Badge variant="success">
+                      <CheckCircle className="h-3.5 w-3.5 mr-1" />
+                      Completed
+                    </Badge>
+                  ) : viewingResourceId === selectedResource.id ? (
+                    <p className="text-xs text-slate-500">
+                      Keep viewing this resource. Progress will update automatically after the viewing time.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-500">
+                      Progress updates automatically after you start a resource and complete the viewing time.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}

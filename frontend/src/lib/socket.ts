@@ -1,12 +1,12 @@
 import { io, Socket } from 'socket.io-client';
-import { supabase } from './supabase';
+import { getCurrentSession } from './supabase';
 
 let socket: Socket | null = null;
 
 export async function getSocket(): Promise<Socket> {
   if (socket?.connected) return socket;
 
-  const { data: { session } } = await supabase.auth.getSession();
+  const session = await getCurrentSession();
   const token = session?.access_token;
 
   if (!token) throw new Error('No auth token');

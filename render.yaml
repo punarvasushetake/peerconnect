@@ -28,12 +28,20 @@ services:
         sync: false
       - key: MISTRAL_API_KEY
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       - key: MISTRAL_MODEL
         value: mistral-small-latest
       - key: AI_SERVICE_URL
         sync: false
       - key: AI_SERVICE_TIMEOUT_MS
         value: 8000
+      - key: JITSI_DOMAIN
+        sync: false
+      - key: JITSI_APP_ID
+        sync: false
       - key: SUPABASE_AVATAR_BUCKET
         value: avatars
       - key: SUPABASE_RESOURCE_BUCKET

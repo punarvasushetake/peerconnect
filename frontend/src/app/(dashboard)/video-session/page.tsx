@@ -138,6 +138,14 @@ const GUEST_MENTORS: MatchItem[] = [
   },
 ];
 
+const JITSI_DOMAIN = (process.env.NEXT_PUBLIC_JITSI_DOMAIN || 'meet.jit.si')
+  .replace(/^https?:\/\//, '')
+  .replace(/\/$/, '');
+const JITSI_APP_ID = (process.env.NEXT_PUBLIC_JITSI_APP_ID || '').replace(/^\/+|\/+$/g, '');
+
+const getJitsiRoomName = (roomName: string) => (JITSI_APP_ID ? `${JITSI_APP_ID}/${roomName}` : roomName);
+const getJitsiJoinUrl = (roomName: string) => `https://${JITSI_DOMAIN}/${getJitsiRoomName(roomName)}`;
+
 const getEffectiveSessionStatus = (session: SessionItem): SessionStatus => {
   if (session.status === 'pending' && session.expires_at && new Date(session.expires_at).getTime() <= Date.now()) {
     return 'expired';
@@ -191,6 +199,10 @@ export default function VideoSessionPage() {
   const [decliningSessionId, setDecliningSessionId] = useState<string | null>(null);
   const [cancellingSessionId, setCancellingSessionId] = useState<string | null>(null);
   const [endingSessionId, setEndingSessionId] = useState<string | null>(null);
+  const [feedbackSession, setFeedbackSession] = useState<SessionItem | null>(null);
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComments, setFeedbackComments] = useState('');
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [, setClockTick] = useState(0);
 
   const [topic, setTopic] = useState('');
@@ -341,7 +353,7 @@ export default function VideoSessionPage() {
         const session: SessionItem = {
           id: `guest-session-${Date.now()}`,
           room_name: roomName,
-          join_url: `https://meet.jit.si/${roomName}`,
+          join_url: getJitsiJoinUrl(roomName),
           provider: 'jitsi',
           status: 'accepted',
           started_at: new Date().toISOString(),
@@ -362,7 +374,11 @@ export default function VideoSessionPage() {
           const withoutDuplicate = prev.filter((item) => item.id !== payload.session.id);
           return [payload.session, ...withoutDuplicate];
         });
-        toast.success(payload.message || 'Session request sent');
+        toast.success(
+          payload.email_sent
+            ? payload.message || 'Session request emailed to the peer'
+            : 'Session request sent. The peer can accept it from their notifications.'
+        );
       }
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to request session');
@@ -428,17 +444,31 @@ export default function VideoSessionPage() {
     }
   };
 
+  const getFeedbackTargetId = (session: SessionItem) => {
+    if (!user?.id) return null;
+    if (session.requester_id === user.id) return session.mentor_user_id || null;
+    if (session.mentor_user_id === user.id) return session.requester_id || null;
+    return null;
+  };
+
   const endSession = async (sessionId: string) => {
     try {
       setEndingSessionId(sessionId);
+      const currentSession = activeSession?.id === sessionId
+        ? activeSession
+        : sessions.find((item) => item.id === sessionId) || null;
       if (guestMode) {
         const endedAt = new Date().toISOString();
+        const endedSession = currentSession
+          ? { ...currentSession, status: 'ended' as SessionStatus, ended_at: endedAt }
+          : null;
         setSessions((prev) =>
           prev.map((item) =>
             item.id === sessionId ? { ...item, status: 'ended', ended_at: endedAt } : item
           )
         );
         setActiveSession(null);
+        if (endedSession) setFeedbackSession(endedSession);
         toast.success('Session ended');
         return;
       }
@@ -448,6 +478,7 @@ export default function VideoSessionPage() {
       if (session) {
         setSessions((prev) => prev.map((item) => (item.id === session.id ? session : item)));
         setActiveSession(null);
+        setFeedbackSession(session);
         toast.success('Session ended');
       }
     } catch (error: any) {
@@ -457,22 +488,39 @@ export default function VideoSessionPage() {
     }
   };
 
-  const submitFeedback = async (sessionId: string, toUserId: string, rating: number) => {
+  const submitFeedback = async () => {
+    if (!feedbackSession) return;
+
     if (guestMode) {
+      setFeedbackSession(null);
+      setFeedbackComments('');
+      setFeedbackRating(5);
       toast.success('Feedback submitted (demo mode)');
       return;
     }
 
+    const toUserId = getFeedbackTargetId(feedbackSession);
+    if (!toUserId) {
+      toast.error('Could not find the other participant for feedback');
+      return;
+    }
+
     try {
+      setSubmittingFeedback(true);
       await api.post('/feedback', {
-        session_id: sessionId,
+        session_id: feedbackSession.id,
         to_user_id: toUserId,
-        rating,
-        comments: 'Session feedback submitted from video workspace.',
+        rating: feedbackRating,
+        comments: feedbackComments.trim() || null,
       });
+      setFeedbackSession(null);
+      setFeedbackComments('');
+      setFeedbackRating(5);
       toast.success('Feedback submitted');
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to submit feedback');
+    } finally {
+      setSubmittingFeedback(false);
     }
   };
 
@@ -706,14 +754,14 @@ export default function VideoSessionPage() {
                           Cancel
                         </Button>
                       )}
-                      {canJoin && matches[0]?.matched_user_id && (
+                      {status === 'ended' && getFeedbackTargetId(session) && (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => submitFeedback(session.id, matches[0].matched_user_id, 5)}
+                          onClick={() => setFeedbackSession(session)}
                         >
                           <Star className="h-4 w-4 mr-1" />
-                          Rate 5
+                          Give Feedback
                         </Button>
                       )}
                       {status === 'ended' && (
@@ -750,10 +798,11 @@ export default function VideoSessionPage() {
 
           <div className="overflow-hidden rounded-xl border border-slate-200">
             <JitsiMeeting
-              domain="meet.jit.si"
-              roomName={activeSession.room_name}
+              domain={JITSI_DOMAIN}
+              roomName={getJitsiRoomName(activeSession.room_name)}
               configOverwrite={{
-                startWithAudioMuted: true,
+                startWithAudioMuted: false,
+                startWithVideoMuted: false,
                 prejoinPageEnabled: false,
               }}
               interfaceConfigOverwrite={{
@@ -765,10 +814,52 @@ export default function VideoSessionPage() {
               }}
               onReadyToClose={() => endSession(activeSession.id)}
               getIFrameRef={(iframeRef) => {
+               iframeRef.setAttribute('allow', 'camera; microphone; display-capture; fullscreen; autoplay');
                 iframeRef.style.height = '560px';
                 iframeRef.style.width = '100%';
               }}
             />
+          </div>
+        </Card>
+      )}
+
+      {feedbackSession && (
+        <Card className="p-6">
+          <div className="flex items-center gap-2">
+            <Star className="h-5 w-5 text-amber-500" />
+            <h2 className="text-lg font-semibold text-slate-900">Session Feedback</h2>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-[12rem_1fr_auto] md:items-end">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Rating</label>
+              <select
+                value={feedbackRating}
+                onChange={(event) => setFeedbackRating(Number(event.target.value))}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm"
+              >
+                {[5, 4, 3, 2, 1].map((rating) => (
+                  <option key={rating} value={rating}>
+                    {rating}/5
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Comments</label>
+              <Input
+                value={feedbackComments}
+                onChange={(event) => setFeedbackComments(event.target.value)}
+                placeholder="Share what went well or what could improve..."
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setFeedbackSession(null)}>
+                Cancel
+              </Button>
+              <Button onClick={submitFeedback} loading={submittingFeedback}>
+                Submit
+              </Button>
+            </div>
           </div>
         </Card>
       )}

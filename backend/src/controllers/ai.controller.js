@@ -3,15 +3,15 @@ const { ApiError } = require('../utils/apiError');
 const { MISTRAL_API_KEY, MISTRAL_API_URL, MISTRAL_MODEL } = require('../config/mistral');
 const {
   searchSemanticDocuments,
-  recommendPeersSemantic,
   generateQuizFromSemantic,
   askRagQuestion,
 } = require('../services/semantic.service');
+const { getRecommendedPeers } = require('../services/recommendation.service');
 
 /**
  * Helper: call Mistral chat completions API.
  */
-const callMistral = async (systemPrompt, userMessage) => {
+const callMistral = async (systemPrompt, userMessage, options = {}) => {
   if (!MISTRAL_API_KEY) {
     throw new ApiError(503, 'Mistral API key is not configured');
   }
@@ -28,8 +28,8 @@ const callMistral = async (systemPrompt, userMessage) => {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
-      temperature: 0.7,
-      max_tokens: 2048,
+      temperature: options.temperature ?? 0.35,
+      max_tokens: options.maxTokens ?? 2048,
     }),
   });
 
@@ -40,6 +40,102 @@ const callMistral = async (systemPrompt, userMessage) => {
 
   const result = await response.json();
   return result.choices[0].message.content;
+};
+
+const stripHtml = (value = '') =>
+  String(value)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const tokenize = (value = '') =>
+  stripHtml(value)
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/i)
+    .filter((token) => token.length > 1);
+
+const buildArticleText = (article) =>
+  [
+    article.title,
+    article.category,
+    Array.isArray(article.tags) ? article.tags.join(' ') : '',
+    stripHtml(article.content || ''),
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+const scoreArticle = (article, query) => {
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) return 0;
+
+  const title = stripHtml(article.title || '').toLowerCase();
+  const category = String(article.category || '').toLowerCase();
+  const tags = Array.isArray(article.tags) ? article.tags.join(' ').toLowerCase() : '';
+  const content = stripHtml(article.content || '').toLowerCase();
+
+  let score = 0;
+  for (const token of queryTokens) {
+    if (title.includes(token)) score += 6;
+    if (tags.includes(token)) score += 4;
+    if (category.includes(token)) score += 3;
+    if (content.includes(token)) score += 1;
+  }
+
+  const phrase = stripHtml(query).toLowerCase();
+  if (phrase && title.includes(phrase)) score += 10;
+  if (phrase && content.includes(phrase)) score += 4;
+
+  return score;
+};
+
+const makeSnippet = (content = '', query = '', maxLength = 260) => {
+  const text = stripHtml(content);
+  if (text.length <= maxLength) return text;
+
+  const firstToken = tokenize(query)[0];
+  const matchIndex = firstToken ? text.toLowerCase().indexOf(firstToken) : -1;
+  const start = Math.max(0, matchIndex > -1 ? matchIndex - 80 : 0);
+  const snippet = text.slice(start, start + maxLength).trim();
+  return `${start > 0 ? '...' : ''}${snippet}${start + maxLength < text.length ? '...' : ''}`;
+};
+
+const getRankedArticles = async (query, limit = 8) => {
+  const { data: articles, error } = await supabase
+    .from('articles')
+    .select('id, title, content, category, tags, created_at')
+    .order('created_at', { ascending: false })
+    .limit(120);
+
+  if (error) throw new ApiError(400, error.message);
+
+  return (articles || [])
+    .map((article) => ({
+      ...article,
+      snippet: makeSnippet(article.content || '', query),
+      relevance_score: scoreArticle(article, query),
+    }))
+    .filter((article) => article.relevance_score > 0)
+    .sort((a, b) => b.relevance_score - a.relevance_score)
+    .slice(0, limit);
+};
+
+const getRepositoryArticles = async (limit = 80) => {
+  const { data: articles, error } = await supabase
+    .from('articles')
+    .select('id, title, content, category, tags, created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw new ApiError(400, error.message);
+
+  return (articles || []).map((article) => ({
+    ...article,
+    content: stripHtml(article.content || ''),
+  }));
 };
 
 const logAIUsage = async ({ userId, actionType, promptSummary, latencyMs }) => {
@@ -56,6 +152,30 @@ const logAIUsage = async ({ userId, actionType, promptSummary, latencyMs }) => {
   }
 };
 
+const answerGeneralQuestion = async (query) =>
+  callMistral(
+    `You are a helpful AI assistant for a peer-learning platform.
+Answer the user's question clearly using your general knowledge.
+
+Format:
+Answer:
+- Give a direct, useful answer in 3 to 6 bullets or short paragraphs.
+
+Helpful Details:
+- Add important context, examples, steps, or cautions if useful.
+
+Next Steps:
+- Give 1 to 3 practical next steps when applicable, or "- None".
+
+Rules:
+- Be accurate and practical.
+- If the question may need current/live data, say that current data should be verified.
+- Do not claim the answer came from the local repository unless repository context is provided.
+- Use plain text only.`,
+    `Question: ${query}`,
+    { temperature: 0.3, maxTokens: 1200 }
+  );
+
 /**
  * Summarize content using Mistral.
  */
@@ -68,15 +188,44 @@ const summarize = async (req, res) => {
       throw new ApiError(400, 'Content is required');
     }
 
+    const plainContent = stripHtml(content);
     const summary = await callMistral(
-      'You are a helpful assistant that creates concise, well-structured summaries. Provide a clear summary in 3-5 bullet points.',
-      `Please summarize the following content:\n\n${content}`
+      `You create polished executive learning summaries for a peer-learning platform.
+Your job is to shorten the source while preserving the useful meaning, clarity, and value.
+
+Output must be effective for a busy learner or supervisor to read quickly.
+If the source is about one page, produce a compact but rich summary of about 180-320 words.
+If the source is very short, still improve the writing and capture every important point without padding.
+
+Format every answer exactly like this:
+Polished Summary:
+Write 1 strong paragraph that captures the core idea, context, and value.
+
+Key Takeaways:
+- 4 to 7 brushed, high-signal bullets
+- each bullet should be specific, useful, and easy to remember
+- include important terms, decisions, steps, or warnings from the source
+
+Why It Matters:
+- 1 to 3 bullets explaining the practical importance or impact
+
+Recommended Next Steps:
+- 1 to 3 concrete actions, or "- None" if the source has no action
+
+Rules:
+- Use plain text only.
+- Do not invent facts that are not in the source.
+- Do not make the answer too tiny.
+- Do not include generic filler like "this content discusses".
+- Prefer clear professional language over vague academic wording.`,
+      `Summarize and polish this source content:\n\n${plainContent}`,
+      { temperature: 0.25, maxTokens: 1400 }
     );
 
     await logAIUsage({
       userId: req.user?.id,
       actionType: 'summary',
-      promptSummary: content.slice(0, 500),
+      promptSummary: plainContent.slice(0, 500),
       latencyMs: Date.now() - startedAt,
     });
 
@@ -181,21 +330,29 @@ const intelligentSearch = async (req, res) => {
       throw new ApiError(400, 'Query is required');
     }
 
-    // Search articles using full-text search
-    const { data: articles, error } = await supabase
-      .from('articles')
-      .select('id, title, content, category, tags, created_at')
-      .textSearch('title', query, { type: 'websearch' })
-      .limit(10);
-
-    if (error) throw new ApiError(400, error.message);
+    const articles = await getRankedArticles(query, 10);
 
     if (articles.length === 0) {
+      let answer;
+      try {
+        answer = await answerGeneralQuestion(query);
+      } catch {
+        answer = 'I could not find matching repository resources, and the AI answer service is unavailable right now.';
+      }
+
+      await logAIUsage({
+        userId: req.user?.id,
+        actionType: 'search-general',
+        promptSummary: query.slice(0, 500),
+        latencyMs: Date.now() - startedAt,
+      });
+
       return res.json({
         success: true,
         data: {
           results: [],
-          explanation: 'No articles found matching your query.',
+          answer,
+          explanation: 'Answered using the AI model because no matching repository resources were found.',
         },
       });
     }
@@ -204,13 +361,14 @@ const intelligentSearch = async (req, res) => {
       query,
       articles.map((article) => ({
         id: article.id,
-        text: `${article.title || ''}\n${article.content?.slice(0, 400) || ''}`,
+        text: buildArticleText(article).slice(0, 900),
       }))
     );
 
+    let rankedArticles = articles;
     if (semanticRanking?.ranked?.length) {
       const articleById = new Map(articles.map((article) => [String(article.id), article]));
-      const rankedArticles = semanticRanking.ranked
+      rankedArticles = semanticRanking.ranked
         .map((row) => articleById.get(String(row.id)))
         .filter(Boolean);
 
@@ -220,66 +378,52 @@ const intelligentSearch = async (req, res) => {
           rankedArticles.push(article);
         }
       }
-
-      await logAIUsage({
-        userId: req.user?.id,
-        actionType: 'search-semantic',
-        promptSummary: query.slice(0, 500),
-        latencyMs: Date.now() - startedAt,
-      });
-
-      return res.json({
-        success: true,
-        data: {
-          results: rankedArticles,
-          explanation: `Results ranked by semantic relevance (${semanticRanking.model || 'sentence-transformers'}).`,
-        },
-      });
     }
 
-    // Use Mistral to re-rank and explain
-    const articlesContext = articles
-      .map((a, i) => `[${i + 1}] Title: ${a.title}\nSnippet: ${a.content?.substring(0, 200)}...`)
+    const articlesContext = rankedArticles
+      .slice(0, 5)
+      .map((a, i) => `[${i + 1}] ${a.title}\nCategory: ${a.category || 'uncategorized'}\nSnippet: ${a.snippet}`)
       .join('\n\n');
 
-    const aiResponse = await callMistral(
-      `You are a search assistant. Given a user query and a list of articles, re-rank them by relevance and provide a brief explanation of why each result is relevant. Return your response as a JSON object with this structure:
-{
-  "ranked_ids": [array of article indices in order of relevance, 1-based],
-  "explanation": "A brief summary of the search results and their relevance"
-}
-Return ONLY the JSON, no other text.`,
-      `Query: "${query}"\n\nArticles:\n${articlesContext}`
-    );
-
-    let aiResult;
+    let answer = '';
+    let explanation = semanticRanking?.ranked?.length
+      ? `Ranked using repository content plus semantic relevance (${semanticRanking.model || 'semantic service'}).`
+      : 'Ranked using title, tags, category, and resource content.';
     try {
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      aiResult = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(aiResponse);
-    } catch {
-      // If parsing fails, return articles in original order
-      aiResult = {
-        ranked_ids: articles.map((_, i) => i + 1),
-        explanation: 'Results returned in default order.',
-      };
-    }
+      answer = await callMistral(
+        `You answer user questions using both general knowledge and repository search results.
+Use the repository results when they are relevant, but do not limit the answer to them.
+Return:
+Answer:
+- a clear, useful answer in 3 to 6 bullets or short paragraphs
 
-    // Re-order articles based on AI ranking
-    const rankedArticles = aiResult.ranked_ids
-      .map((idx) => articles[idx - 1])
-      .filter(Boolean);
+Repository Matches:
+- mention the most useful local resource titles, or "- None" if they do not materially help
+
+Next Steps:
+- 1 to 3 practical next steps when applicable
+
+If the repository results are weak, say that the answer is mainly from the AI model.
+If the question may need current/live data, say that current data should be verified.`,
+        `Query: ${query}\n\nRepository results:\n${articlesContext}`,
+        { temperature: 0.3, maxTokens: 1200 }
+      );
+    } catch {
+      answer = `I found ${rankedArticles.length} matching resource${rankedArticles.length === 1 ? '' : 's'} for "${query}", but the AI answer service is unavailable. Open the best matches below for details.`;
+    }
 
     res.json({
       success: true,
       data: {
-        results: rankedArticles.length > 0 ? rankedArticles : articles,
-        explanation: aiResult.explanation,
+        results: rankedArticles,
+        answer,
+        explanation,
       },
     });
 
     await logAIUsage({
       userId: req.user?.id,
-      actionType: 'search',
+      actionType: semanticRanking?.ranked?.length ? 'search-semantic' : 'search',
       promptSummary: query.slice(0, 500),
       latencyMs: Date.now() - startedAt,
     });
@@ -318,66 +462,11 @@ const getRecommendations = async (req, res) => {
       });
     }
 
-    const skillIds = learningSkills.map((s) => s.skill_id);
-
-    // Find users teaching those skills
-    const { data: teachers, error: tError } = await supabase
-      .from('user_skills')
-      .select('*, skills(name, category), profiles(id, full_name, avatar_url, headline)')
-      .in('skill_id', skillIds)
-      .eq('is_teaching', true)
-      .neq('user_id', userId);
-
-    if (tError) throw new ApiError(400, tError.message);
-
-    // Group by user to avoid duplicates
-    const userMap = new Map();
-    for (const t of teachers) {
-      const uid = t.profiles?.id;
-      if (!uid) continue;
-      if (!userMap.has(uid)) {
-        userMap.set(uid, {
-          user: t.profiles,
-          teaching_skills: [],
-        });
-      }
-      userMap.get(uid).teaching_skills.push({
-        skill_name: t.skills?.name,
-        proficiency_level: t.proficiency_level,
-      });
-    }
-
-    const recommendations = Array.from(userMap.values());
-    const learningSkillNames = learningSkills
-      .map((item) => item.skills?.name)
-      .filter(Boolean);
-
-    const semanticPeerRanking = await recommendPeersSemantic(
-      learningSkillNames,
-      recommendations.map((item) => ({
-        id: item.user?.id,
-        text: `${item.user?.headline || ''}\n${item.teaching_skills.map((s) => s.skill_name).join(', ')}`,
-      }))
-    );
-
-    let rankedRecommendations = recommendations;
-    if (semanticPeerRanking?.ranked?.length) {
-      const recById = new Map(recommendations.map((item) => [String(item.user?.id), item]));
-      rankedRecommendations = semanticPeerRanking.ranked
-        .map((row) => recById.get(String(row.id)))
-        .filter(Boolean);
-
-      const includedIds = new Set(rankedRecommendations.map((item) => String(item.user?.id)));
-      for (const rec of recommendations) {
-        if (!includedIds.has(String(rec.user?.id))) {
-          rankedRecommendations.push(rec);
-        }
-      }
-    }
+    const rankedRecommendations = await getRecommendedPeers(userId, 6);
 
     await logAIUsage({
       userId,
-      actionType: semanticPeerRanking?.ranked?.length ? 'recommend-peer-semantic' : 'recommend-peer',
+      actionType: 'recommend-peer',
       promptSummary: `learning_skills_count=${learningSkills.length}`,
       latencyMs: Date.now() - startedAt,
     });
@@ -409,23 +498,29 @@ const askRepository = async (req, res) => {
       throw new ApiError(400, 'question is required');
     }
 
-    const { data: articles, error } = await supabase
-      .from('articles')
-      .select('id, title, content, category, tags, created_at')
-      .order('created_at', { ascending: false })
-      .limit(60);
+    const repositoryArticles = await getRepositoryArticles(80);
 
-    if (error) throw new ApiError(400, error.message);
+    if (repositoryArticles.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          answer: `The knowledge base does not have any repository resources yet. Add resources first, then ask this question again.`,
+          contexts: [],
+          model: 'empty-repository',
+          provider: 'fallback',
+        },
+      });
+    }
 
-    const docs = (articles || []).map((article) => ({
+    const allDocs = repositoryArticles.map((article) => ({
       id: article.id,
       title: article.title,
-      text: `${article.title || ''}\n${article.content || ''}`,
+      text: buildArticleText(article).slice(0, 1400),
       category: article.category || null,
       tags: article.tags || [],
     }));
 
-    const ragResponse = await askRagQuestion(question, docs);
+    const ragResponse = await askRagQuestion(question, allDocs);
 
     if (ragResponse) {
       await logAIUsage({
@@ -441,25 +536,58 @@ const askRepository = async (req, res) => {
       });
     }
 
-    // Fallback: lightweight answer from top text-search snippets.
-    const { data: fallbackArticles, error: fallbackError } = await supabase
-      .from('articles')
-      .select('id, title, content')
-      .textSearch('title', question, { type: 'websearch' })
-      .limit(5);
+    const rankedArticles = repositoryArticles
+      .map((article) => ({
+        ...article,
+        snippet: makeSnippet(article.content || '', question),
+        relevance_score: scoreArticle(article, question),
+      }))
+      .sort((a, b) => b.relevance_score - a.relevance_score);
 
-    if (fallbackError) throw new ApiError(400, fallbackError.message);
+    const bestArticles = rankedArticles.some((item) => item.relevance_score > 0)
+      ? rankedArticles.filter((item) => item.relevance_score > 0).slice(0, 6)
+      : repositoryArticles.slice(0, 6).map((article) => ({
+          ...article,
+          snippet: makeSnippet(article.content || '', question),
+          relevance_score: 0,
+        }));
 
-    const snippets = (fallbackArticles || []).map((item) => ({
+    const snippets = bestArticles.map((item) => ({
       id: item.id,
       title: item.title,
-      snippet: (item.content || '').slice(0, 220),
+      snippet: item.snippet,
+      score: item.relevance_score,
     }));
 
-    const fallbackAnswer =
-      snippets.length > 0
-        ? `I couldn't reach the semantic service, but here are the most relevant resources I found for "${question}".`
-        : `I couldn't find matching resources for "${question}".`;
+    const contextText = snippets
+      .map((item, index) => `[${index + 1}] ${item.title}\n${item.snippet}`)
+      .join('\n\n');
+
+    let fallbackAnswer;
+    try {
+      fallbackAnswer = await callMistral(
+        `You are a grounded knowledge-base assistant.
+Your job is to be useful even when the retrieved context is partial.
+Answer only from the provided contexts. Do not invent details.
+If the exact answer is missing, explain what the available resources do say and what information is still missing.
+Format:
+Direct Answer:
+- give the clearest answer possible
+
+Details From Knowledge Base:
+- include useful specifics from the retrieved resources
+
+Missing / Unclear:
+- mention gaps only if needed
+
+Sources Used:
+- cite source titles`,
+        `Question: ${question}\n\nContexts:\n${contextText}`,
+        { temperature: 0.2, maxTokens: 1200 }
+      );
+    } catch {
+      fallbackAnswer = `I found related repository content for "${question}", but the AI answer service is unavailable. Review the retrieved contexts below.`;
+    }
 
     await logAIUsage({
       userId: req.user?.id,
@@ -473,8 +601,8 @@ const askRepository = async (req, res) => {
       data: {
         answer: fallbackAnswer,
         contexts: snippets,
-        model: 'fallback-search',
-        provider: 'fallback',
+        model: MISTRAL_API_KEY ? MISTRAL_MODEL : 'local-retrieval',
+        provider: MISTRAL_API_KEY ? 'mistral-grounded-fallback' : 'fallback',
       },
     });
   } catch (error) {

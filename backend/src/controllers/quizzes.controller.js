@@ -1,6 +1,63 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
 
+const QUIZ_PASSING_SCORE = 80;
+const COURSE_COMPLETION_XP = 100;
+
+const completeCourseIfPassed = async ({ userId, quiz, score }) => {
+  if (quiz.source_type !== 'course' || !quiz.source_id || score < QUIZ_PASSING_SCORE) {
+    return null;
+  }
+
+  const { data: enrollment, error: enrollmentError } = await supabase
+    .from('enrollments')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('course_id', quiz.source_id)
+    .maybeSingle();
+
+  if (enrollmentError) throw new ApiError(400, enrollmentError.message);
+  if (!enrollment || enrollment.completed_at) return enrollment || null;
+
+  const completedAt = new Date().toISOString();
+  const { data: completedEnrollment, error: updateError } = await supabase
+    .from('enrollments')
+    .update({
+      progress_pct: 100,
+      completed_at: completedAt,
+    })
+    .eq('id', enrollment.id)
+    .eq('user_id', userId)
+    .select()
+    .single();
+
+  if (updateError) throw new ApiError(400, updateError.message);
+
+  const { error: activityError } = await supabase.from('activity_log').insert({
+    user_id: userId,
+    action_type: 'course_completed',
+    entity_type: 'course',
+    entity_id: quiz.source_id,
+    xp_earned: COURSE_COMPLETION_XP,
+  });
+  if (activityError) console.error('Failed to log course completion activity:', activityError.message);
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('xp_points')
+    .eq('id', userId)
+    .single();
+
+  if (profile) {
+    await supabase
+      .from('profiles')
+      .update({ xp_points: (profile.xp_points || 0) + COURSE_COMPLETION_XP })
+      .eq('id', userId);
+  }
+
+  return completedEnrollment;
+};
+
 /**
  * List all quizzes with pagination.
  */
@@ -66,7 +123,8 @@ const getQuizById = async (req, res) => {
 /**
  * Submit a quiz attempt.
  * Takes {answers} in body, calculates score by comparing with quiz questions' correct answers.
- * Stores in quiz_attempts. If score >= 70, log activity with 50 XP.
+ * Stores in quiz_attempts. If score >= 80, log activity with 50 XP.
+ * If the quiz belongs to a course, passing it also marks the course enrollment complete.
  */
 const submitAttempt = async (req, res) => {
   try {
@@ -119,14 +177,18 @@ const submitAttempt = async (req, res) => {
 
     if (attemptError) throw new ApiError(400, attemptError.message);
 
-    // If score >= 70, log activity with 50 XP
-    if (score >= 70) {
-      await supabase.from('activity_log').insert({
+    const passed = score >= QUIZ_PASSING_SCORE;
+
+    // If score >= 80, log activity with 50 XP
+    if (passed) {
+      const { error: activityError } = await supabase.from('activity_log').insert({
         user_id: userId,
         action_type: 'quiz_passed',
-        description: `Passed quiz: ${quiz.title} with score ${score}%`,
+        entity_type: 'quiz',
+        entity_id: quizId,
         xp_earned: 50,
       });
+      if (activityError) console.error('Failed to log quiz activity:', activityError.message);
 
       // Update user XP
       const { data: profile } = await supabase
@@ -143,13 +205,16 @@ const submitAttempt = async (req, res) => {
       }
     }
 
+    const completedEnrollment = await completeCourseIfPassed({ userId, quiz, score });
+
     res.status(201).json({
       success: true,
       data: {
         ...attempt,
         correct_count: correctCount,
         total_questions: totalQuestions,
-        passed: score >= 70,
+        passed,
+        completed_enrollment: completedEnrollment,
       },
     });
   } catch (error) {
@@ -171,7 +236,7 @@ const getMyAttempts = async (req, res) => {
       .from('quiz_attempts')
       .select('*, quizzes(*)')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order('completed_at', { ascending: false });
 
     if (error) throw new ApiError(400, error.message);
 

@@ -23,6 +23,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { isGuestUser } from '@/lib/guestSession';
 import { getLevelTitle } from '@/lib/utils';
 import { unwrapData } from '@/lib/apiResponse';
+import { normalizePeerRecommendations } from '@/lib/recommendations';
 import api from '@/lib/api';
 import { Profile, PeerRecommendation } from '@/types';
 
@@ -187,9 +188,7 @@ export default function PeersPage() {
         const recPayload = unwrapData<PeerRecommendation[] | { recommendations?: PeerRecommendation[] }>(recsRes);
         const peersPayload = unwrapData<Profile[]>(peersRes);
 
-        setRecommendations(
-          Array.isArray(recPayload) ? recPayload : recPayload?.recommendations || []
-        );
+        setRecommendations(normalizePeerRecommendations(recPayload));
         setAllPeers(peersPayload || []);
       } catch (err: any) {
         console.error('Failed to load peers:', err);
