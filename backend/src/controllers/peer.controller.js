@@ -426,8 +426,8 @@ const requestPeerSession = async (req, res) => {
         session,
         email_sent: emailResult.sent,
         message: emailResult.sent
-          ? `Session request emailed to the peer. It expires in ${SESSION_REQUEST_EXPIRY_MINUTES} minutes.`
-          : `Session request sent. The peer can accept it from their notifications within ${SESSION_REQUEST_EXPIRY_MINUTES} minutes.`,
+          ? 'Request sent successfully.'
+          : 'Request sent. The peer can accept it from their notifications.',
       },
     });
   } catch (error) {

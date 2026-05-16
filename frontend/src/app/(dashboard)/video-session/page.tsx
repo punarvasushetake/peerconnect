@@ -376,8 +376,8 @@ export default function VideoSessionPage() {
         });
         toast.success(
           payload.email_sent
-            ? payload.message || 'Session request emailed to the peer'
-            : 'Session request sent. The peer can accept it from their notifications.'
+            ? payload.message || 'Request sent successfully.'
+            : payload.message || 'Request sent. The peer can accept it from their notifications.'
         );
       }
     } catch (error: any) {
