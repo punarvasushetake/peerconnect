@@ -15,7 +15,6 @@
   "dependencies": {
     "@jitsi/react-sdk": "^1.4.4",
     "@supabase/supabase-js": "^2.100.0",
-    "@tailwindcss/oxide-win32-x64-msvc": "^4.2.2",
     "@tailwindcss/postcss": "^4.2.2",
     "@tanstack/react-table": "^8.21.3",
     "@tiptap/extension-link": "^3.22.1",
@@ -44,5 +43,8 @@
     "socket.io-client": "^4.8.3",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2"
+  },
+  "optionalDependencies": {
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.2.2"
   }
 }

@@ -336,8 +336,36 @@ const enrollInCourse = async (req, res) => {
   }
 };
 
+const COURSE_PASSING_SCORE = 80;
+const MAX_CONTENT_PROGRESS = 99;
+
+const hasPassedCourseQuiz = async (userId, courseId) => {
+  const { data: courseQuizzes, error: quizError } = await supabase
+    .from('quizzes')
+    .select('id')
+    .eq('source_type', 'course')
+    .eq('source_id', courseId);
+
+  if (quizError) throw new ApiError(400, quizError.message);
+  const quizIds = (courseQuizzes || []).map((quiz) => quiz.id);
+  if (quizIds.length === 0) return false;
+
+  const { data: passedAttempt, error: attemptError } = await supabase
+    .from('quiz_attempts')
+    .select('id')
+    .eq('user_id', userId)
+    .gte('score', COURSE_PASSING_SCORE)
+    .in('quiz_id', quizIds)
+    .limit(1)
+    .maybeSingle();
+
+  if (attemptError) throw new ApiError(400, attemptError.message);
+  return Boolean(passedAttempt);
+};
+
 /**
- * Update enrollment progress. If 100%, set completed_at and log activity with 100 XP.
+ * Update enrollment progress from course content. Content progress can reach 99%.
+ * A course is completed only after the user passes a course-linked quiz with 80%+.
  */
 const updateProgress = async (req, res) => {
   try {
@@ -353,9 +381,22 @@ const updateProgress = async (req, res) => {
       throw new ApiError(400, 'enrollmentId is required');
     }
 
-    const updates = { progress_pct };
+    const { data: enrollment, error: enrollmentError } = await supabase
+      .from('enrollments')
+      .select('*')
+      .eq('id', enrollmentId)
+      .eq('user_id', userId)
+      .single();
 
-    if (progress_pct === 100) {
+    if (enrollmentError || !enrollment) {
+      throw new ApiError(404, 'Enrollment not found');
+    }
+
+    const canComplete = progress_pct === 100 && await hasPassedCourseQuiz(userId, enrollment.course_id);
+    const nextProgress = canComplete ? 100 : Math.min(progress_pct, MAX_CONTENT_PROGRESS);
+    const updates = { progress_pct: nextProgress };
+
+    if (canComplete && !enrollment.completed_at) {
       updates.completed_at = new Date().toISOString();
     }
 
@@ -369,8 +410,8 @@ const updateProgress = async (req, res) => {
 
     if (error) throw new ApiError(400, error.message);
 
-    // If completed, log activity with 100 XP
-    if (progress_pct === 100) {
+    // If completed for the first time, log activity with 100 XP.
+    if (canComplete && !enrollment.completed_at) {
       const { error: activityError } = await supabase.from('activity_log').insert({
         user_id: userId,
         action_type: 'course_completed',
