@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -131,11 +131,34 @@ export default function CourseDetailPage() {
     duration_minutes: '',
   });
 
+  const syncCompletedResources = useCallback((nextEnrollment: Enrollment | null, nextResources: Resource[]) => {
+    if (!nextEnrollment || nextResources.length === 0) {
+      setCompletedResources((current) => (current.size === 0 ? current : new Set()));
+      return;
+    }
+
+    const completedCount = Math.min(
+      nextResources.length,
+      Math.floor((Number(nextEnrollment.progress_pct || 0) / 100) * nextResources.length)
+    );
+    const nextCompleted = new Set(nextResources.slice(0, completedCount).map((resource) => resource.id));
+
+    setCompletedResources((current) => {
+      if (
+        current.size === nextCompleted.size &&
+        [...current].every((resourceId) => nextCompleted.has(resourceId))
+      ) {
+        return current;
+      }
+
+      return nextCompleted;
+    });
+  }, []);
+
   /* ---- Fetch course ----------------------------------------------- */
-  useEffect(() => {
-    async function fetchCourse() {
+  const fetchCourse = useCallback(async (options?: { silent?: boolean }) => {
       try {
-        setLoading(true);
+        if (!options?.silent) setLoading(true);
         const [courseRes, enrollRes] = await Promise.all([
           api.get(`/courses/${courseId}`),
           api.get('/enrollments/me'),
@@ -150,38 +173,49 @@ export default function CourseDetailPage() {
 
         // Select first resource by default
         const resources = courseData.resources ?? [];
+        const sortedResources = [...resources].sort((a: Resource, b: Resource) => a.order_index - b.order_index);
+        syncCompletedResources(myEnrollment || null, sortedResources);
         if (resources.length > 0) {
-          const sorted = [...resources].sort((a: Resource, b: Resource) => a.order_index - b.order_index);
-          setSelectedResource(sorted[0]);
+          setSelectedResource((current) =>
+            current && sortedResources.some((resource) => resource.id === current.id)
+              ? current
+              : sortedResources[0]
+          );
         }
       } catch (err: any) {
         console.error('Failed to load course:', err);
-        toast.error('Failed to load course');
+        if (!options?.silent) toast.error('Failed to load course');
       } finally {
         setLoading(false);
       }
-    }
+  }, [courseId, syncCompletedResources]);
+
+  useEffect(() => {
     fetchCourse();
-  }, [courseId]);
+  }, [fetchCourse]);
+
+  useEffect(() => {
+    const refresh = () => fetchCourse({ silent: true });
+    const intervalId = window.setInterval(refresh, 10000);
+    window.addEventListener('focus', refresh);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [fetchCourse]);
 
   /* ---- Helpers ---------------------------------------------------- */
-  const resources = course?.resources
-    ? [...course.resources].sort((a, b) => a.order_index - b.order_index)
-    : [];
+  const resources = useMemo(
+    () => (course?.resources ? [...course.resources].sort((a, b) => a.order_index - b.order_index) : []),
+    [course?.resources]
+  );
 
   const isCreator = profile?.id === course?.created_by;
 
   useEffect(() => {
-    if (!enrollment || resources.length === 0 || completedResources.size > 0) return;
-
-    const completedCount = Math.min(
-      resources.length,
-      Math.floor((enrollment.progress_pct / 100) * resources.length)
-    );
-    if (completedCount === 0) return;
-
-    setCompletedResources(new Set(resources.slice(0, completedCount).map((resource) => resource.id)));
-  }, [completedResources.size, enrollment, resources]);
+    syncCompletedResources(enrollment, resources);
+  }, [enrollment, resources, syncCompletedResources]);
 
   useEffect(() => {
     return () => {
@@ -307,9 +341,7 @@ export default function CourseDetailPage() {
       toast.success('Resource added!');
       setShowAddResource(false);
       setResourceForm({ title: '', type: 'video', url: '', duration_minutes: '' });
-      // Refetch course
-      const courseRes = await api.get(`/courses/${courseId}`);
-      setCourse(unwrapData<Course>(courseRes));
+      await fetchCourse({ silent: true });
     } catch (err: any) {
       toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to add resource');
     } finally {

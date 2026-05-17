@@ -12,6 +12,7 @@ import {
   GraduationCap,
   Pencil,
   Trash2,
+  CheckCircle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '@/lib/api';
@@ -100,7 +101,7 @@ function getGradient(id: string) {
 /*  Learning Hub Page                                                  */
 /* ================================================================== */
 export default function LearningHubPage() {
-  const { profile } = useAuth();
+  const { profile, user } = useAuth();
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
@@ -133,9 +134,9 @@ export default function LearningHubPage() {
   });
 
   /* ---- Fetch courses ---------------------------------------------- */
-  const fetchCourses = useCallback(async () => {
+  const fetchCourses = useCallback(async (options?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!options?.silent) setLoading(true);
       const params: Record<string, string | number> = { page };
       if (category !== 'all') params.category = category;
 
@@ -151,7 +152,7 @@ export default function LearningHubPage() {
       setEnrollments(unwrapData<Enrollment[]>(enrollRes) || []);
     } catch (err: any) {
       console.error('Failed to load courses:', err);
-      toast.error('Failed to load courses');
+      if (!options?.silent) toast.error('Failed to load courses');
     } finally {
       setLoading(false);
     }
@@ -161,9 +162,24 @@ export default function LearningHubPage() {
     fetchCourses();
   }, [fetchCourses]);
 
+  useEffect(() => {
+    const refresh = () => fetchCourses({ silent: true });
+    const intervalId = window.setInterval(refresh, 10000);
+    window.addEventListener('focus', refresh);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [fetchCourses]);
+
   /* ---- Is enrolled helper ----------------------------------------- */
   function getEnrollment(courseId: string) {
     return enrollments.find((e) => e.course_id === courseId);
+  }
+
+  function isCompletedEnrollment(enrollment?: Enrollment) {
+    return Boolean(enrollment?.completed_at || Number(enrollment?.progress_pct || 0) >= 100);
   }
 
   /* ---- Filtered courses (local search + difficulty) --------------- */
@@ -354,7 +370,8 @@ export default function LearningHubPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map((course) => {
             const enrollment = getEnrollment(course.id);
-            const isOwner = profile?.id === course.created_by;
+            const isOwner = (profile?.id || user?.id) === course.created_by;
+            const isCompleted = isCompletedEnrollment(enrollment);
             return (
               <Card key={course.id} hover className="overflow-hidden flex flex-col">
                 {/* Thumbnail */}
@@ -421,6 +438,11 @@ export default function LearningHubPage() {
                           </Button>
                         </div>
                       </div>
+                    ) : isCompleted ? (
+                      <Button variant="outline" className="w-full" disabled>
+                        <CheckCircle className="h-4 w-4 mr-1.5" />
+                        Completed
+                      </Button>
                     ) : enrollment ? (
                       <Link href={`/learning/${course.id}`} className="block">
                         <Button variant="secondary" className="w-full">
