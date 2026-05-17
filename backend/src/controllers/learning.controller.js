@@ -509,12 +509,15 @@ const repairStaleCompletedEnrollmentsForUser = async (userId) => {
     const completedResources = courseResources.filter(
       (resource) => new Date(resource.created_at).getTime() <= completedAtMs
     ).length;
+    const hasCurrentQuizPass = await hasPassedCourseQuiz(userId, enrollment.course_id);
 
-    if (completedResources >= courseResources.length) continue;
+    if (completedResources >= courseResources.length && hasCurrentQuizPass) continue;
 
     updates.push({
       id: enrollment.id,
-      progress_pct: calculateAverageProgress(completedResources, courseResources.length),
+      progress_pct: completedResources >= courseResources.length
+        ? MAX_CONTENT_PROGRESS
+        : calculateAverageProgress(completedResources, courseResources.length),
     });
   }
 
@@ -550,6 +553,17 @@ const hasCourseCompletionActivity = async (userId, courseId) => {
 };
 
 const hasPassedCourseQuiz = async (userId, courseId) => {
+  const { data: latestResource, error: resourceError } = await supabase
+    .from('resources')
+    .select('created_at')
+    .eq('course_id', courseId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (resourceError) throw new ApiError(400, resourceError.message);
+  if (!latestResource?.created_at) return false;
+
   const { data: courseQuizzes, error: quizError } = await supabase
     .from('quizzes')
     .select('id')
@@ -565,6 +579,7 @@ const hasPassedCourseQuiz = async (userId, courseId) => {
     .select('id')
     .eq('user_id', userId)
     .gte('score', COURSE_PASSING_SCORE)
+    .gte('completed_at', latestResource.created_at)
     .in('quiz_id', quizIds)
     .limit(1)
     .maybeSingle();
