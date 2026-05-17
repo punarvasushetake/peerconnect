@@ -4,6 +4,7 @@ const { applyCompletedCourseSkill } = require('../services/courseSkill.service')
 
 const QUIZ_PASSING_SCORE = 80;
 const COURSE_COMPLETION_XP = 100;
+const CONTENT_COMPLETE_PROGRESS = 99;
 
 const hasCourseCompletionActivity = async (userId, courseId) => {
   const { data, error } = await supabase
@@ -34,6 +35,21 @@ const completeCourseIfPassed = async ({ userId, quiz, score }) => {
 
   if (enrollmentError) throw new ApiError(400, enrollmentError.message);
   if (!enrollment || enrollment.completed_at) return enrollment || null;
+
+  const { count: resourceCount, error: resourceError } = await supabase
+    .from('resources')
+    .select('id', { count: 'exact', head: true })
+    .eq('course_id', quiz.source_id);
+
+  if (resourceError) throw new ApiError(400, resourceError.message);
+
+  const hasCompletedResources =
+    Number(resourceCount || 0) > 0 &&
+    Number(enrollment.progress_pct || 0) >= CONTENT_COMPLETE_PROGRESS;
+
+  if (!hasCompletedResources) {
+    return enrollment;
+  }
 
   const completedAt = new Date().toISOString();
   const { data: completedEnrollment, error: updateError } = await supabase

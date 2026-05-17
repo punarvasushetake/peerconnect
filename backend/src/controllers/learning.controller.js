@@ -575,7 +575,7 @@ const hasPassedCourseQuiz = async (userId, courseId) => {
 
 /**
  * Update enrollment progress from course content. Content progress can reach 99%.
- * A course is completed only after the user passes a course-linked quiz with 80%+.
+ * A course is completed only after all resources are done and the user passes a course-linked quiz with 80%+.
  */
 const updateProgress = async (req, res) => {
   try {
