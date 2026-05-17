@@ -473,6 +473,67 @@ const reopenCompletedEnrollments = async (courseId, completedResourceOffset = 0)
   return { count: updates.length, progress_pct: fallbackProgressPct };
 };
 
+const repairStaleCompletedEnrollmentsForUser = async (userId) => {
+  const { data: enrollments, error: enrollmentError } = await supabase
+    .from('enrollments')
+    .select('id, course_id, progress_pct, completed_at')
+    .eq('user_id', userId)
+    .not('completed_at', 'is', null);
+
+  if (enrollmentError) throw new ApiError(400, enrollmentError.message);
+  if (!enrollments || enrollments.length === 0) return { count: 0 };
+
+  const courseIds = [...new Set(enrollments.map((enrollment) => enrollment.course_id).filter(Boolean))];
+  if (courseIds.length === 0) return { count: 0 };
+
+  const { data: resources, error: resourceError } = await supabase
+    .from('resources')
+    .select('id, course_id, created_at')
+    .in('course_id', courseIds);
+
+  if (resourceError) throw new ApiError(400, resourceError.message);
+
+  const resourcesByCourseId = new Map();
+  for (const resource of resources || []) {
+    const courseResources = resourcesByCourseId.get(resource.course_id) || [];
+    courseResources.push(resource);
+    resourcesByCourseId.set(resource.course_id, courseResources);
+  }
+
+  const updates = [];
+  for (const enrollment of enrollments) {
+    const courseResources = resourcesByCourseId.get(enrollment.course_id) || [];
+    if (courseResources.length === 0 || !enrollment.completed_at) continue;
+
+    const completedAtMs = new Date(enrollment.completed_at).getTime();
+    const completedResources = courseResources.filter(
+      (resource) => new Date(resource.created_at).getTime() <= completedAtMs
+    ).length;
+
+    if (completedResources >= courseResources.length) continue;
+
+    updates.push({
+      id: enrollment.id,
+      progress_pct: calculateAverageProgress(completedResources, courseResources.length),
+    });
+  }
+
+  await Promise.all(updates.map(async (update) => {
+    const { error } = await supabase
+      .from('enrollments')
+      .update({
+        progress_pct: update.progress_pct,
+        completed_at: null,
+      })
+      .eq('id', update.id)
+      .eq('user_id', userId);
+
+    if (error) throw new ApiError(400, error.message);
+  }));
+
+  return { count: updates.length };
+};
+
 const hasCourseCompletionActivity = async (userId, courseId) => {
   const { data, error } = await supabase
     .from('activity_log')
@@ -606,6 +667,8 @@ const updateProgress = async (req, res) => {
 const getMyEnrollments = async (req, res) => {
   try {
     const userId = req.user.id;
+
+    await repairStaleCompletedEnrollmentsForUser(userId);
 
     const { data, error } = await supabase
       .from('enrollments')
