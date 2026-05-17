@@ -1,8 +1,24 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
+const { applyCompletedCourseSkill } = require('../services/courseSkill.service');
 
 const QUIZ_PASSING_SCORE = 80;
 const COURSE_COMPLETION_XP = 100;
+
+const hasCourseCompletionActivity = async (userId, courseId) => {
+  const { data, error } = await supabase
+    .from('activity_log')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('action_type', 'course_completed')
+    .eq('entity_type', 'course')
+    .eq('entity_id', courseId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new ApiError(400, error.message);
+  return Boolean(data);
+};
 
 const completeCourseIfPassed = async ({ userId, quiz, score }) => {
   if (quiz.source_type !== 'course' || !quiz.source_id || score < QUIZ_PASSING_SCORE) {
@@ -33,26 +49,30 @@ const completeCourseIfPassed = async ({ userId, quiz, score }) => {
 
   if (updateError) throw new ApiError(400, updateError.message);
 
-  const { error: activityError } = await supabase.from('activity_log').insert({
-    user_id: userId,
-    action_type: 'course_completed',
-    entity_type: 'course',
-    entity_id: quiz.source_id,
-    xp_earned: COURSE_COMPLETION_XP,
-  });
-  if (activityError) console.error('Failed to log course completion activity:', activityError.message);
+  await applyCompletedCourseSkill({ userId, courseId: quiz.source_id });
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('xp_points')
-    .eq('id', userId)
-    .single();
+  if (!(await hasCourseCompletionActivity(userId, quiz.source_id))) {
+    const { error: activityError } = await supabase.from('activity_log').insert({
+      user_id: userId,
+      action_type: 'course_completed',
+      entity_type: 'course',
+      entity_id: quiz.source_id,
+      xp_earned: COURSE_COMPLETION_XP,
+    });
+    if (activityError) console.error('Failed to log course completion activity:', activityError.message);
 
-  if (profile) {
-    await supabase
+    const { data: profile } = await supabase
       .from('profiles')
-      .update({ xp_points: (profile.xp_points || 0) + COURSE_COMPLETION_XP })
-      .eq('id', userId);
+      .select('xp_points')
+      .eq('id', userId)
+      .single();
+
+    if (profile) {
+      await supabase
+        .from('profiles')
+        .update({ xp_points: (profile.xp_points || 0) + COURSE_COMPLETION_XP })
+        .eq('id', userId);
+    }
   }
 
   return completedEnrollment;

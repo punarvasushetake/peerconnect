@@ -1,5 +1,6 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
+const { applyCompletedCourseSkill } = require('../services/courseSkill.service');
 
 const DEFAULT_COURSE_THUMBNAIL_URL = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675">
@@ -224,6 +225,8 @@ const updateCourse = async (req, res) => {
 
     if (error) throw new ApiError(400, error.message);
 
+    await reopenCompletedEnrollments(id);
+
     res.json({
       success: true,
       data,
@@ -278,6 +281,7 @@ const deleteCourse = async (req, res) => {
  */
 const addResource = async (req, res) => {
   try {
+    const userId = req.user.id;
     const { id: courseId } = req.params;
     const { title, type, url, youtube_id, duration_minutes, order_index } = req.body;
 
@@ -288,6 +292,15 @@ const addResource = async (req, res) => {
     if (!courseId) {
       throw new ApiError(400, 'courseId is required');
     }
+
+    const { data: existing, error: fetchError } = await supabase
+      .from('courses')
+      .select('created_by')
+      .eq('id', courseId)
+      .single();
+
+    if (fetchError) throw new ApiError(404, 'Course not found');
+    if (existing.created_by !== userId) throw new ApiError(403, 'Not authorized to update this course');
 
     const { data, error } = await supabase
       .from('resources')
@@ -305,9 +318,15 @@ const addResource = async (req, res) => {
 
     if (error) throw new ApiError(400, error.message);
 
+    const reopenedEnrollments = await reopenCompletedEnrollments(courseId, 1);
+
     res.status(201).json({
       success: true,
       data,
+      meta: {
+        reopened_enrollments: reopenedEnrollments.count,
+        reopened_progress_pct: reopenedEnrollments.progress_pct,
+      },
     });
   } catch (error) {
     if (error instanceof ApiError) {
@@ -380,6 +399,94 @@ const enrollInCourse = async (req, res) => {
 
 const COURSE_PASSING_SCORE = 80;
 const MAX_CONTENT_PROGRESS = 99;
+
+const getCourseResourceCount = async (courseId) => {
+  const { count, error } = await supabase
+    .from('resources')
+    .select('id', { count: 'exact', head: true })
+    .eq('course_id', courseId);
+
+  if (error) throw new ApiError(400, error.message);
+  return count || 0;
+};
+
+const calculateAverageProgress = (completedResources, totalResources) => {
+  if (totalResources === 0) return MAX_CONTENT_PROGRESS;
+  const progress = Math.round((completedResources / totalResources) * 100);
+  return Math.min(MAX_CONTENT_PROGRESS, progress);
+};
+
+const getReopenedCourseProgress = async (courseId, completedResourceOffset = 0) => {
+  const totalResources = await getCourseResourceCount(courseId);
+  const completedResources = Math.max(0, totalResources - completedResourceOffset);
+  return calculateAverageProgress(completedResources, totalResources);
+};
+
+const reopenCompletedEnrollments = async (courseId, completedResourceOffset = 0) => {
+  const totalResources = await getCourseResourceCount(courseId);
+  const fallbackProgressPct = calculateAverageProgress(
+    Math.max(0, totalResources - completedResourceOffset),
+    totalResources
+  );
+
+  const { data: enrollments, error: fetchError } = await supabase
+    .from('enrollments')
+    .select('id, progress_pct, completed_at')
+    .eq('course_id', courseId);
+
+  if (fetchError) throw new ApiError(400, fetchError.message);
+
+  const updates = (enrollments || [])
+    .map((enrollment) => {
+      const currentProgress = Number(enrollment.progress_pct || 0);
+      const completedResources = currentProgress >= 100
+        ? Math.max(0, totalResources - completedResourceOffset)
+        : Math.floor((currentProgress / 100) * Math.max(0, totalResources - completedResourceOffset));
+      const progressPct = enrollment.completed_at || currentProgress >= 100
+        ? fallbackProgressPct
+        : calculateAverageProgress(completedResources, totalResources);
+
+      return {
+        id: enrollment.id,
+        progress_pct: progressPct,
+        completed_at: null,
+      };
+    })
+    .filter((update) => update.progress_pct < 100);
+
+  if (updates.length === 0) {
+    return { count: 0, progress_pct: fallbackProgressPct };
+  }
+
+  await Promise.all(updates.map(async (update) => {
+    const { error } = await supabase
+      .from('enrollments')
+      .update({
+        progress_pct: update.progress_pct,
+        completed_at: update.completed_at,
+      })
+      .eq('id', update.id);
+
+    if (error) throw new ApiError(400, error.message);
+  }));
+
+  return { count: updates.length, progress_pct: fallbackProgressPct };
+};
+
+const hasCourseCompletionActivity = async (userId, courseId) => {
+  const { data, error } = await supabase
+    .from('activity_log')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('action_type', 'course_completed')
+    .eq('entity_type', 'course')
+    .eq('entity_id', courseId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new ApiError(400, error.message);
+  return Boolean(data);
+};
 
 const hasPassedCourseQuiz = async (userId, courseId) => {
   const { data: courseQuizzes, error: quizError } = await supabase
@@ -454,26 +561,30 @@ const updateProgress = async (req, res) => {
 
     // If completed for the first time, log activity with 100 XP.
     if (canComplete && !enrollment.completed_at) {
-      const { error: activityError } = await supabase.from('activity_log').insert({
-        user_id: userId,
-        action_type: 'course_completed',
-        entity_type: 'course',
-        entity_id: data.course_id,
-        xp_earned: 100,
-      });
-      if (activityError) console.error('Failed to log course completion activity:', activityError.message);
+      await applyCompletedCourseSkill({ userId, courseId: data.course_id });
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('xp_points')
-        .eq('id', userId)
-        .single();
+      if (!(await hasCourseCompletionActivity(userId, data.course_id))) {
+        const { error: activityError } = await supabase.from('activity_log').insert({
+          user_id: userId,
+          action_type: 'course_completed',
+          entity_type: 'course',
+          entity_id: data.course_id,
+          xp_earned: 100,
+        });
+        if (activityError) console.error('Failed to log course completion activity:', activityError.message);
 
-      if (profile) {
-        await supabase
+        const { data: profile } = await supabase
           .from('profiles')
-          .update({ xp_points: (profile.xp_points || 0) + 100 })
-          .eq('id', userId);
+          .select('xp_points')
+          .eq('id', userId)
+          .single();
+
+        if (profile) {
+          await supabase
+            .from('profiles')
+            .update({ xp_points: (profile.xp_points || 0) + 100 })
+            .eq('id', userId);
+        }
       }
     }
 
