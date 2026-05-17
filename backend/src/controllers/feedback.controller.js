@@ -29,30 +29,40 @@ const createFeedback = async (req, res) => {
       throw new ApiError(404, 'Session not found');
     }
 
-    const isParticipant =
-      session.requester_id === fromUserId || session.mentor_user_id === fromUserId;
-    if (!isParticipant) {
-      throw new ApiError(403, 'Not authorized to submit feedback for this session');
+    if (session.requester_id !== fromUserId) {
+      throw new ApiError(403, 'Only the requester can submit feedback for this session');
     }
 
-    const validToUser =
-      toUserId === session.requester_id || toUserId === session.mentor_user_id;
-    if (!validToUser) {
-      throw new ApiError(400, 'to_user_id must be a participant of this session');
+    if (session.status !== 'ended') {
+      throw new ApiError(400, 'Feedback can only be submitted after the session ends');
+    }
+
+    if (toUserId !== session.mentor_user_id) {
+      throw new ApiError(400, 'to_user_id must be the requested peer for this session');
+    }
+
+    const { data: existingFeedback, error: existingFeedbackError } = await supabase
+      .from('feedback')
+      .select('id')
+      .eq('session_id', sessionId)
+      .eq('from_user_id', fromUserId)
+      .eq('to_user_id', toUserId)
+      .maybeSingle();
+
+    if (existingFeedbackError) throw new ApiError(400, existingFeedbackError.message);
+    if (existingFeedback) {
+      throw new ApiError(409, 'Feedback has already been submitted for this session');
     }
 
     const { data, error } = await supabase
       .from('feedback')
-      .upsert(
-        {
-          session_id: sessionId,
-          from_user_id: fromUserId,
-          to_user_id: toUserId,
-          rating: numericRating,
-          comments: comments || null,
-        },
-        { onConflict: 'session_id,from_user_id,to_user_id' }
-      )
+      .insert({
+        session_id: sessionId,
+        from_user_id: fromUserId,
+        to_user_id: toUserId,
+        rating: numericRating,
+        comments: comments || null,
+      })
       .select('*')
       .single();
 

@@ -86,6 +86,13 @@ interface SessionRequestResponse {
   message: string;
 }
 
+interface FeedbackItem {
+  id: string;
+  session_id: string;
+  from_user_id: string;
+  to_user_id: string;
+}
+
 const ENGINEERING_SKILLS: Skill[] = [
   { id: 'eng-dsa', name: 'Data Structures & Algorithms' },
   { id: 'eng-system-design', name: 'System Design' },
@@ -203,6 +210,7 @@ export default function VideoSessionPage() {
   const [feedbackRating, setFeedbackRating] = useState(5);
   const [feedbackComments, setFeedbackComments] = useState('');
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [submittedFeedbackSessionIds, setSubmittedFeedbackSessionIds] = useState<Set<string>>(new Set());
   const [, setClockTick] = useState(0);
 
   const [topic, setTopic] = useState('');
@@ -230,17 +238,58 @@ export default function VideoSessionPage() {
       ]);
       const loadedSkills = unwrapData<Skill[]>(skillsRes) || [];
       const loadedRequests = unwrapData<PeerRequest[]>(reqRes) || [];
+      const loadedSessions = unwrapData<SessionItem[]>(sessionsRes) || [];
       setSkills(loadedSkills);
       setRequests(loadedRequests);
-      setSessions(unwrapData<SessionItem[]>(sessionsRes) || []);
+      setSessions(loadedSessions);
       setIncomingRequests(unwrapData<SessionItem[]>(incomingRes) || []);
       setSkillId((prev) => prev || loadedSkills[0]?.id || '');
       setSelectedRequestId((prev) => prev || loadedRequests[0]?.id || '');
+      await loadSubmittedFeedback(loadedSessions);
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Failed to load session data');
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadSubmittedFeedback = async (sessionRows: SessionItem[]) => {
+    if (!user?.id || guestMode) {
+      setSubmittedFeedbackSessionIds(new Set());
+      return;
+    }
+
+    const feedbackEligibleSessions = sessionRows.filter(
+      (session) =>
+        getEffectiveSessionStatus(session) === 'ended' &&
+        session.requester_id === user.id &&
+        Boolean(session.mentor_user_id)
+    );
+
+    if (feedbackEligibleSessions.length === 0) {
+      setSubmittedFeedbackSessionIds(new Set());
+      return;
+    }
+
+    const feedbackResults = await Promise.all(
+      feedbackEligibleSessions.map(async (session) => {
+        const response = await api.get(`/feedback/session/${session.id}`);
+        return {
+          sessionId: session.id,
+          feedback: unwrapData<FeedbackItem[]>(response) || [],
+        };
+      })
+    );
+
+    setSubmittedFeedbackSessionIds(
+      new Set(
+        feedbackResults
+          .filter((result) =>
+            result.feedback.some((item) => item.from_user_id === user.id)
+          )
+          .map((result) => result.sessionId)
+      )
+    );
   };
 
   useEffect(() => {
@@ -356,6 +405,8 @@ export default function VideoSessionPage() {
           join_url: getJitsiJoinUrl(roomName),
           provider: 'jitsi',
           status: 'accepted',
+          requester_id: user?.id,
+          mentor_user_id: match.matched_user_id,
           started_at: new Date().toISOString(),
         };
         setSessions((prev) => [session, ...prev]);
@@ -447,9 +498,13 @@ export default function VideoSessionPage() {
   const getFeedbackTargetId = (session: SessionItem) => {
     if (!user?.id) return null;
     if (session.requester_id === user.id) return session.mentor_user_id || null;
-    if (session.mentor_user_id === user.id) return session.requester_id || null;
     return null;
   };
+
+  const canGiveFeedback = (session: SessionItem) =>
+    getEffectiveSessionStatus(session) === 'ended' &&
+    Boolean(getFeedbackTargetId(session)) &&
+    !submittedFeedbackSessionIds.has(session.id);
 
   const endSession = async (sessionId: string) => {
     try {
@@ -468,7 +523,7 @@ export default function VideoSessionPage() {
           )
         );
         setActiveSession(null);
-        if (endedSession) setFeedbackSession(endedSession);
+        if (endedSession && canGiveFeedback(endedSession)) setFeedbackSession(endedSession);
         toast.success('Session ended');
         return;
       }
@@ -478,7 +533,7 @@ export default function VideoSessionPage() {
       if (session) {
         setSessions((prev) => prev.map((item) => (item.id === session.id ? session : item)));
         setActiveSession(null);
-        setFeedbackSession(session);
+        if (canGiveFeedback(session)) setFeedbackSession(session);
         toast.success('Session ended');
       }
     } catch (error: any) {
@@ -492,6 +547,7 @@ export default function VideoSessionPage() {
     if (!feedbackSession) return;
 
     if (guestMode) {
+      setSubmittedFeedbackSessionIds((prev) => new Set(prev).add(feedbackSession.id));
       setFeedbackSession(null);
       setFeedbackComments('');
       setFeedbackRating(5);
@@ -513,6 +569,7 @@ export default function VideoSessionPage() {
         rating: feedbackRating,
         comments: feedbackComments.trim() || null,
       });
+      setSubmittedFeedbackSessionIds((prev) => new Set(prev).add(feedbackSession.id));
       setFeedbackSession(null);
       setFeedbackComments('');
       setFeedbackRating(5);
@@ -754,7 +811,7 @@ export default function VideoSessionPage() {
                           Cancel
                         </Button>
                       )}
-                      {status === 'ended' && getFeedbackTargetId(session) && (
+                      {canGiveFeedback(session) && (
                         <Button
                           size="sm"
                           variant="outline"
